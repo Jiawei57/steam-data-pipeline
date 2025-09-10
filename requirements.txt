@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+pandas
+beautifulsoup4
+httpx
+sqlalchemy
+psycopg2-binary
+python-dotenv
+asyncpg
+gunicorn # We add gunicorn back as it's a good production server for Render

@@ -1,0 +1,10 @@
+# Docker-specific files
+Dockerfile
+.dockerignore
+
+# Python virtual environment and cache files
+.venv
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/

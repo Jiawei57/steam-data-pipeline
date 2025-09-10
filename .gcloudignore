@@ -1,0 +1,20 @@
+# 這個檔案指定了在部署時 *不會* 被上傳到 Google Cloud 的檔案。
+# `gcloud` 指令工具會使用此檔案。
+
+# Docker 相關檔案
+.dockerignore
+
+# Python 虛擬環境與快取檔案。
+# 這是最重要的設定，用來防止上傳您的 venv。
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 工具相關的快取/設定
+.pytest_cache/
+
+# 其他
+*.swp
+*.swo

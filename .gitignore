@@ -1,0 +1,7 @@
+# Python
+__pycache__/
+.venv/
+
+# Environment variables
+.env
+postgres.env
