@@ -157,6 +157,21 @@ async def get_twitch_token() -> Optional[str]:
         logging.error(f"Failed to get Twitch token: {e.response.status_code} - {e.response.text}")
         return None
 
+async def fetch_top_selling_app_ids(limit: int = 500) -> List[str]:
+    """Fetches the App IDs of the top selling games on Steam via web scraping."""
+    url = "https://store.steampowered.com/search/?filter=topsellers"
+    try:
+        response = await http_client.get(url)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+        app_ids = [
+            row.get("data-ds-appid") for row in soup.select("a.search_result_row") if row.get("data-ds-appid")
+        ]
+        return app_ids[:limit]
+    except Exception as e:
+        logging.error(f"Failed to scrape top selling app IDs: {e}")
+        return []
+
 @retry_on_error()
 async def fetch_all_app_ids() -> List[str]:
     """Fetches all App IDs from the official Steam API."""
@@ -172,6 +187,20 @@ async def fetch_all_app_ids() -> List[str]:
         return app_ids
     except Exception as e:
         logging.error(f"Failed to fetch all app IDs: {e}")
+        return []
+
+async def fetch_most_played_app_ids(limit: int = 500) -> List[str]:
+    """Fetches the App IDs of the most played games on Steam via web scraping."""
+    url = "https://store.steampowered.com/stats/Steam-Game-and-Player-Statistics-Updated-Daily"
+    try:
+        response = await http_client.get(url)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+        # The app ID is in the href of the link in the first column of each row
+        app_ids = [row.select_one("a.gameLink")['href'].split('/app/')[1] for row in soup.select("tr.player_count_row") if row.select_one("a.gameLink")]
+        return app_ids[:limit]
+    except Exception as e:
+        logging.error(f"Failed to scrape most played app IDs: {e}")
         return []
 
 @retry_on_error()
@@ -261,28 +290,26 @@ async def scrape_and_store_data():
         # Ensure tables exist
         Base.metadata.create_all(bind=engine)
 
-        # --- Resume Logic ---
-        start_index = 0
-        state = db.query(ScrapingState).filter(ScrapingState.key == 'last_processed_index').first()
-        if state and state.value.isdigit():
-            start_index = int(state.value)
-            logging.info(f"Resuming scrape from index {start_index}.")
+        # --- Smart Hybrid Strategy: Fetch a pool of valuable games ---
+        logging.info("Fetching candidate games from Top Sellers and Most Played lists...")
+        top_selling_ids = await fetch_top_selling_app_ids()
+        most_played_ids = await fetch_most_played_app_ids()
 
-        all_app_ids = await fetch_all_app_ids()
-        if not all_app_ids:
-            logging.warning("Aborting scrape: could not fetch the list of all app IDs.")
+        # Combine and deduplicate the lists to create a high-value pool of games
+        candidate_app_ids = sorted(list(set(top_selling_ids + most_played_ids)))
+
+        if not candidate_app_ids:
+            logging.warning("Aborting scrape: could not fetch any candidate app IDs.")
             return
         
         twitch_token = await get_twitch_token()
 
-        total_apps = len(all_app_ids)
-        if start_index >= total_apps:
-            logging.info("All apps have already been processed. Nothing to do.")
-            return
-        logging.info(f"Starting to process {total_apps} apps in batches of {BATCH_SIZE}. This will take a very long time...")
+        total_apps = len(candidate_app_ids)
+        logging.info(f"Processing a high-value pool of {total_apps} games in batches of {BATCH_SIZE}.")
 
-        for i in range(start_index, total_apps, BATCH_SIZE):
-            batch_ids = all_app_ids[i:i + BATCH_SIZE]
+        # The resumability logic is no longer needed for this shorter task, but batching is still a good practice.
+        for i in range(0, total_apps, BATCH_SIZE):
+            batch_ids = candidate_app_ids[i:i + BATCH_SIZE]
             
             # Graceful shutdown check
             if shutdown_event.is_set():
@@ -320,17 +347,6 @@ async def scrape_and_store_data():
                     db.bulk_insert_mappings(GamesTimeseries, valid_timeseries)
                     db.commit()
                     logging.info(f"Inserted {len(valid_timeseries)} timeseries records for this batch.")
-
-            # --- State Update ---
-            # After a batch is fully processed, save the progress.
-            next_index = i + len(batch_ids)
-            state_update_stmt = pg_insert(ScrapingState).values(key='last_processed_index', value=str(next_index))
-            state_update_stmt = state_update_stmt.on_conflict_do_update(
-                index_elements=['key'], set_={'value': state_update_stmt.excluded.value}
-            )
-            db.execute(state_update_stmt)
-            db.commit()
-            logging.info(f"Successfully saved progress. Next batch will start from index {next_index}.")
             
             # IMPORTANT: Pause between batches to respect API rate limits
             logging.info("Pausing for 5 seconds before next batch for safety...")
