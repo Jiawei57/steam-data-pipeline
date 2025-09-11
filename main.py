@@ -7,8 +7,8 @@ from typing import List, Dict, Any, Optional, Tuple
 import httpx
 import json
 from bs4 import BeautifulSoup
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
-from sqlalchemy import create_engine, Column, String, Integer, TIMESTAMP, text, inspect
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends 
+from sqlalchemy import create_engine, Column, String, Integer, TIMESTAMP, text, inspect, Index
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from functools import wraps
