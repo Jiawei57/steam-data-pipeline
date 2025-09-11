@@ -98,8 +98,8 @@ def retry_on_error(max_retries: int = 3, base_delay: float = 1.0):
                     async with semaphore:
                         return await func(*args, **kwargs)
                 except (httpx.HTTPStatusError, httpx.RequestError, json.JSONDecodeError) as e:
-                    # Retry on server errors (5xx) or rate limiting (429)
-                    if isinstance(e, httpx.HTTPStatusError) and (e.response.status_code >= 500 or e.response.status_code == 429):
+                    # Retry on server errors (5xx), rate limiting (429), or temporary blocks (403)
+                    if isinstance(e, httpx.HTTPStatusError) and (e.response.status_code >= 500 or e.response.status_code == 429 or e.response.status_code == 403):
                         if attempt < max_retries - 1:
                             delay = base_delay * (2 ** attempt)
                             logging.warning(f"Request failed with {e.response.status_code}. Retrying in {delay:.2f} seconds... (Attempt {attempt + 1}/{max_retries})")
