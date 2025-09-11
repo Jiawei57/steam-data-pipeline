@@ -1,7 +1,7 @@
 import os
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional, Tuple
 
 import httpx
@@ -10,6 +10,7 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
 from sqlalchemy import create_engine, Column, String, Integer, TIMESTAMP, text, inspect
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from functools import wraps
 from dotenv import load_dotenv
 
 # --- Configuration & Setup ---
@@ -37,7 +38,9 @@ twitch_token_cache: Dict[str, Any] = {"token": None, "expires_at": datetime.utcn
 is_scraping: bool = False
 
 # --- Constants ---
-BATCH_SIZE = 100 # Process 100 apps at a time to manage memory and rate limits
+BATCH_SIZE = 100  # Process 100 apps at a time to manage memory
+CONCURRENCY_LIMIT = 10  # Allow only 10 concurrent requests to Steam API to avoid 403 errors
+semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
 
 # Use a single, reusable httpx client for performance
 http_client = httpx.AsyncClient(timeout=20.0)
@@ -57,20 +60,48 @@ class GamesMetadata(Base):
     developer = Column(String)
     publisher = Column(String)
     genres = Column(String)
-    tags = Column(String)
-    metadata_last_updated = Column(TIMESTAMP, server_default=text('CURRENT_TIMESTAMP'), onupdate=datetime.utcnow)
+    tags = Column(String) # This column is not currently populated, can be removed or used later
+    metadata_last_updated = Column(TIMESTAMP(timezone=True), server_default=text('CURRENT_TIMESTAMP'), onupdate=lambda: datetime.now(timezone.utc))
 
 class GamesTimeseries(Base):
     __tablename__ = "games_timeseries"
     id = Column(Integer, primary_key=True, autoincrement=True)
     app_id = Column(String, index=True)
-    timestamp = Column(TIMESTAMP, default=datetime.utcnow, index=True)
+    timestamp = Column(TIMESTAMP(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
     price = Column(String)
     discount_percent = Column(Integer)
     player_count = Column(Integer)
     streamer_count = Column(Integer)
 
 # --- External API Services ---
+
+def retry_on_error(max_retries: int = 3, base_delay: float = 1.0):
+    """A decorator to retry a function on HTTP errors with exponential backoff."""
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            for attempt in range(max_retries):
+                try:
+                    # Use a semaphore to limit concurrency
+                    async with semaphore:
+                        return await func(*args, **kwargs)
+                except httpx.HTTPStatusError as e:
+                    # Retry on server errors (5xx) or rate limiting (429)
+                    if e.response.status_code >= 500 or e.response.status_code == 429:
+                        if attempt < max_retries - 1:
+                            delay = base_delay * (2 ** attempt)
+                            logging.warning(f"Request failed with {e.response.status_code}. Retrying in {delay:.2f} seconds... (Attempt {attempt + 1}/{max_retries})")
+                            await asyncio.sleep(delay)
+                        else:
+                            logging.error(f"Request failed after {max_retries} attempts. Giving up. Error: {e}")
+                            return None
+                    else:
+                        # For other client errors (like 403, 404), don't retry, just log and fail.
+                        logging.error(f"Client error {e.response.status_code} for {e.request.url}. Not retrying. Error: {e}")
+                        return None
+            return None
+        return wrapper
+    return decorator
 
 async def get_twitch_token() -> Optional[str]:
     """Fetches a Twitch app access token, using a cache to avoid repeated requests."""
@@ -79,7 +110,7 @@ async def get_twitch_token() -> Optional[str]:
         return None
 
     # Return cached token if it's still valid
-    if twitch_token_cache["token"] and twitch_token_cache["expires_at"] > datetime.utcnow():
+    if twitch_token_cache["token"] and twitch_token_cache["expires_at"] > datetime.now(timezone.utc):
         return twitch_token_cache["token"]
 
     url = "https://id.twitch.tv/oauth2/token"
@@ -97,7 +128,7 @@ async def get_twitch_token() -> Optional[str]:
         
         # Cache the new token and its expiry time
         twitch_token_cache["token"] = token
-        twitch_token_cache["expires_at"] = datetime.utcnow() + timedelta(seconds=expires_in * 0.9) # Refresh before it expires
+        twitch_token_cache["expires_at"] = datetime.now(timezone.utc) + timedelta(seconds=expires_in * 0.9) # Refresh before it expires
         
         logging.info("Successfully fetched and cached a new Twitch token.")
         return token
@@ -105,6 +136,7 @@ async def get_twitch_token() -> Optional[str]:
         logging.error(f"Failed to get Twitch token: {e.response.status_code} - {e.response.text}")
         return None
 
+@retry_on_error()
 async def fetch_all_app_ids() -> List[str]:
     """Fetches all App IDs from the official Steam API."""
     url = "https://api.steampowered.com/ISteamApps/GetAppList/v2/"
@@ -121,6 +153,7 @@ async def fetch_all_app_ids() -> List[str]:
         logging.error(f"Failed to fetch all app IDs: {e}")
         return []
 
+@retry_on_error()
 async def fetch_game_details(app_id: str) -> Optional[Dict[str, Any]]:
     """Fetches detailed metadata for a single game from the Steam API."""
     url = f"https://store.steampowered.com/api/appdetails?appids={app_id}"
@@ -143,6 +176,7 @@ async def fetch_game_details(app_id: str) -> Optional[Dict[str, Any]]:
         logging.error(f"Failed to fetch details for app_id {app_id}: {e}")
     return None
 
+@retry_on_error()
 async def fetch_timeseries_data(app_id: str, game_name: str, twitch_token: Optional[str]) -> Optional[Dict[str, Any]]:
     """Fetches dynamic, time-series data for a single game."""
     # 1. Fetch player count
@@ -182,7 +216,7 @@ async def fetch_timeseries_data(app_id: str, game_name: str, twitch_token: Optio
 
     return {
         "app_id": app_id,
-        "timestamp": datetime.utcnow(),
+        "timestamp": datetime.now(timezone.utc),
         "price": price,
         "discount_percent": discount,
         "player_count": player_count,
@@ -247,7 +281,7 @@ async def scrape_and_store_data():
                     logging.info(f"Inserted {len(valid_timeseries)} timeseries records for this batch.")
             
             # IMPORTANT: Pause between batches to respect API rate limits
-            logging.info("Pausing for 5 seconds before next batch...")
+            logging.info("Pausing for 2 seconds before next batch...")
             await asyncio.sleep(5)
 
     except Exception as e:
