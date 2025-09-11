@@ -6,7 +6,7 @@ from typing import List, Dict, Any, Optional, Tuple
 
 import httpx
 from bs4 import BeautifulSoup
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
 from sqlalchemy import create_engine, Column, String, Integer, TIMESTAMP, text, inspect
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 from sqlalchemy.dialects.postgresql import insert as pg_insert
