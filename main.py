@@ -44,7 +44,7 @@ CONCURRENCY_LIMIT = int(os.getenv("SCRAPER_CONCURRENCY_LIMIT", 10))
 semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
 
 # Use a single, reusable httpx client for performance
-http_client = httpx.AsyncClient(timeout=20.0, follow_redirects=True)
+http_client = httpx.AsyncClient(timeout=30.0, follow_redirects=True)
 
 # --- Database Setup (SQLAlchemy ORM) ---
 
@@ -157,20 +157,28 @@ async def get_twitch_token() -> Optional[str]:
         logging.error(f"Failed to get Twitch token: {e.response.status_code} - {e.response.text}")
         return None
 
-async def fetch_top_selling_app_ids(limit: int = 500) -> List[str]:
-    """Fetches the App IDs of the top selling games on Steam via web scraping."""
-    url = "https://store.steampowered.com/search/?filter=topsellers"
-    try:
-        response = await http_client.get(url)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, "html.parser")
-        app_ids = [
-            row.get("data-ds-appid") for row in soup.select("a.search_result_row") if row.get("data-ds-appid")
-        ]
-        return app_ids[:limit]
-    except Exception as e:
-        logging.error(f"Failed to scrape top selling app IDs: {e}")
-        return []
+async def fetch_paginated_list(base_url: str, limit: int, selector: str, id_extractor) -> List[str]:
+    """A generic function to scrape paginated lists from Steam."""
+    all_app_ids = []
+    page = 1
+    while len(all_app_ids) < limit:
+        # Steam search pages use a 'page' query parameter.
+        url = f"{base_url}&page={page}"
+        logging.info(f"Fetching page {page} from {url}")
+        try:
+            response = await http_client.get(url)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, "html.parser")
+            page_app_ids = [id_extractor(row) for row in soup.select(selector) if id_extractor(row)]
+            if not page_app_ids:
+                break # Stop if a page has no results
+            all_app_ids.extend(page_app_ids)
+            page += 1
+            await asyncio.sleep(1) # Be polite and wait a second between page loads
+        except Exception as e:
+            logging.error(f"Failed to scrape page {page} of {base_url}: {e}")
+            break # Stop on error
+    return all_app_ids[:limit]
 
 @retry_on_error()
 async def fetch_all_app_ids() -> List[str]:
@@ -187,20 +195,6 @@ async def fetch_all_app_ids() -> List[str]:
         return app_ids
     except Exception as e:
         logging.error(f"Failed to fetch all app IDs: {e}")
-        return []
-
-async def fetch_most_played_app_ids(limit: int = 500) -> List[str]:
-    """Fetches the App IDs of the most played games on Steam via web scraping."""
-    url = "https://store.steampowered.com/stats/Steam-Game-and-Player-Statistics-Updated-Daily"
-    try:
-        response = await http_client.get(url)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, "html.parser")
-        # The app ID is in the href of the link in the first column of each row
-        app_ids = [row.select_one("a.gameLink")['href'].split('/app/')[1] for row in soup.select("tr.player_count_row") if row.select_one("a.gameLink")]
-        return app_ids[:limit]
-    except Exception as e:
-        logging.error(f"Failed to scrape most played app IDs: {e}")
         return []
 
 @retry_on_error()
@@ -292,8 +286,25 @@ async def scrape_and_store_data():
 
         # --- Smart Hybrid Strategy: Fetch a pool of valuable games ---
         logging.info("Fetching candidate games from Top Sellers and Most Played lists...")
-        top_selling_ids = await fetch_top_selling_app_ids()
-        most_played_ids = await fetch_most_played_app_ids()
+        
+        # Fetch Top 500 Top Sellers with pagination
+        top_selling_ids = await fetch_paginated_list(
+            base_url="https://store.steampowered.com/search/?filter=topsellers",
+            limit=500,
+            selector="a.search_result_row",
+            id_extractor=lambda row: row.get("data-ds-appid")
+        )
+
+        # The most played list is not paginated, so we can scrape it directly.
+        # The URL has changed, but follow_redirects=True handles this.
+        most_played_ids = []
+        try:
+            response = await http_client.get("https://store.steampowered.com/charts/mostplayed")
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, "html.parser")
+            most_played_ids = [row.get("data-appid") for row in soup.select("tr.weeklytopsellers_TableRow_2-RN6") if row.get("data-appid")]
+        except Exception as e:
+            logging.error(f"Failed to scrape most played app IDs: {e}")
 
         # Combine and deduplicate the lists to create a high-value pool of games
         candidate_app_ids = sorted(list(set(top_selling_ids + most_played_ids)))
