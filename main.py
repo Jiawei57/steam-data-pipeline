@@ -33,6 +33,12 @@ if not DATABASE_URL:
 # A simple in-memory cache for the Twitch token
 twitch_token_cache: Dict[str, Any] = {"token": None, "expires_at": datetime.utcnow()}
 
+# A simple in-memory lock to prevent concurrent scraping tasks
+is_scraping: bool = False
+
+# --- Constants ---
+BATCH_SIZE = 100 # Process 100 apps at a time to manage memory and rate limits
+
 # Use a single, reusable httpx client for performance
 http_client = httpx.AsyncClient(timeout=20.0)
 
@@ -99,21 +105,20 @@ async def get_twitch_token() -> Optional[str]:
         logging.error(f"Failed to get Twitch token: {e.response.status_code} - {e.response.text}")
         return None
 
-async def fetch_top_100_app_ids() -> List[str]:
-    """Fetches the App IDs of the top 100 selling games on Steam via web scraping."""
-    url = "https://store.steampowered.com/search/?filter=topsellers"
+async def fetch_all_app_ids() -> List[str]:
+    """Fetches all App IDs from the official Steam API."""
+    url = "https://api.steampowered.com/ISteamApps/GetAppList/v2/"
     try:
         response = await http_client.get(url)
         response.raise_for_status()
-        soup = BeautifulSoup(response.text, "html.parser")
-        app_ids = [
-            row.get("data-ds-appid")
-            for row in soup.select("a.search_result_row")
-            if row.get("data-ds-appid")
-        ]
-        return app_ids[:100] # Ensure we only get the top 100
+        data = response.json()
+        # The API returns a list of {"appid": 123, "name": "Game Name"}
+        apps = data.get("applist", {}).get("apps", [])
+        app_ids = [str(app.get("appid")) for app in apps if app.get("appid")]
+        logging.info(f"Successfully fetched {len(app_ids)} total app IDs from Steam.")
+        return app_ids
     except Exception as e:
-        logging.error(f"Failed to scrape top 100 app IDs: {e}")
+        logging.error(f"Failed to fetch all app IDs: {e}")
         return []
 
 async def fetch_game_details(app_id: str) -> Optional[Dict[str, Any]]:
@@ -188,53 +193,68 @@ async def fetch_timeseries_data(app_id: str, game_name: str, twitch_token: Optio
 
 async def scrape_and_store_data():
     """The main pipeline function that orchestrates the entire scraping process."""
+    global is_scraping
+    if is_scraping:
+        logging.warning("Scraping process is already running. Skipping new trigger.")
+        return
+
+    is_scraping = True
     logging.info("Starting data scraping process...")
     db = SessionLocal()
     try:
         # Ensure tables exist
         Base.metadata.create_all(bind=engine)
 
-        # Fetch top 100 games and their metadata
-        top_app_ids = await fetch_top_100_app_ids()
-        if not top_app_ids:
-            logging.warning("Aborting scrape: could not fetch top 100 app IDs.")
+        all_app_ids = await fetch_all_app_ids()
+        if not all_app_ids:
+            logging.warning("Aborting scrape: could not fetch the list of all app IDs.")
             return
         
-        logging.info(f"Found {len(top_app_ids)} top selling games. Fetching details...")
-        metadata_tasks = [fetch_game_details(app_id) for app_id in top_app_ids]
-        metadata_results = await asyncio.gather(*metadata_tasks)
-        valid_metadata = [m for m in metadata_results if m and m.get("name")]
-
-        # Upsert metadata into PostgreSQL
-        if valid_metadata:
-            stmt = pg_insert(GamesMetadata).values(valid_metadata)
-            update_stmt = stmt.on_conflict_do_update(
-                index_elements=['app_id'],
-                set_={col.name: getattr(stmt.excluded, col.name) for col in GamesMetadata.__table__.columns if col.name != 'app_id'}
-            )
-            db.execute(update_stmt)
-            db.commit()
-            logging.info(f"Upserted {len(valid_metadata)} game metadata records.")
-
-        # Fetch timeseries data for all successfully identified games
         twitch_token = await get_twitch_token()
-        apps_to_fetch = [(m["app_id"], m["name"]) for m in valid_metadata]
-        
-        logging.info(f"Fetching timeseries data for {len(apps_to_fetch)} games...")
-        timeseries_tasks = [fetch_timeseries_data(app_id, name, twitch_token) for app_id, name in apps_to_fetch]
-        timeseries_results = await asyncio.gather(*timeseries_tasks)
-        valid_timeseries = [t for t in timeseries_results if t]
 
-        # Insert timeseries data
-        if valid_timeseries:
-            db.bulk_insert_mappings(GamesTimeseries, valid_timeseries)
-            db.commit()
-            logging.info(f"Inserted {len(valid_timeseries)} timeseries data records.")
+        total_apps = len(all_app_ids)
+        logging.info(f"Starting to process {total_apps} apps in batches of {BATCH_SIZE}. This will take a very long time...")
+
+        for i in range(0, total_apps, BATCH_SIZE):
+            batch_ids = all_app_ids[i:i + BATCH_SIZE]
+            logging.info(f"Processing batch {i//BATCH_SIZE + 1}/{(total_apps + BATCH_SIZE - 1)//BATCH_SIZE} (apps {i+1}-{i+len(batch_ids)})...")
+
+            # 1. Fetch and Upsert Metadata for the batch
+            metadata_tasks = [fetch_game_details(app_id) for app_id in batch_ids]
+            metadata_results = await asyncio.gather(*metadata_tasks)
+            valid_metadata = [m for m in metadata_results if m and m.get("name")]
+
+            if valid_metadata:
+                stmt = pg_insert(GamesMetadata).values(valid_metadata)
+                update_stmt = stmt.on_conflict_do_update(
+                    index_elements=['app_id'],
+                    set_={col.name: getattr(stmt.excluded, col.name) for col in GamesMetadata.__table__.columns if col.name != 'app_id'}
+                )
+                db.execute(update_stmt)
+                db.commit()
+                logging.info(f"Upserted {len(valid_metadata)} metadata records for this batch.")
+
+            # 2. Fetch and Insert Timeseries data for the batch
+            apps_to_fetch = [(m["app_id"], m["name"]) for m in valid_metadata if m.get("type") == "game" and m.get("name")]
+            if apps_to_fetch:
+                timeseries_tasks = [fetch_timeseries_data(app_id, name, twitch_token) for app_id, name in apps_to_fetch]
+                timeseries_results = await asyncio.gather(*timeseries_tasks)
+                valid_timeseries = [t for t in timeseries_results if t]
+
+                if valid_timeseries:
+                    db.bulk_insert_mappings(GamesTimeseries, valid_timeseries)
+                    db.commit()
+                    logging.info(f"Inserted {len(valid_timeseries)} timeseries records for this batch.")
+            
+            # IMPORTANT: Pause between batches to respect API rate limits
+            logging.info("Pausing for 5 seconds before next batch...")
+            await asyncio.sleep(5)
 
     except Exception as e:
         logging.error(f"An error occurred during the scraping pipeline: {e}", exc_info=True)
         db.rollback()
     finally:
+        is_scraping = False # Release the lock
         db.close()
         logging.info("Scraping process finished.")
 
@@ -242,7 +262,7 @@ async def scrape_and_store_data():
 
 app = FastAPI(
     title="Steam Data Pipeline",
-    description="An automated pipeline to scrape Steam data and store it in a PostgreSQL database.",
+    description="An automated pipeline to scrape all Steam game data and store it in a PostgreSQL database.",
     version="2.0.0",
 )
 

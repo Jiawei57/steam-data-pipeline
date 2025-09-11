@@ -1,13 +1,15 @@
 # Steam 遊戲趨勢分析管道 (Render 版本)
 
-這是一個部署在 **Render** 上的全自動數據管道，旨在從 Steam 平台高效地擷取遊戲銷售與趨勢數據，並將其結構化地存儲在 **PostgreSQL** 資料庫中，以供後續的商業智慧 (BI) 分析與視覺化應用。
+這是一個部署在 **Render** 上的全自動數據管道，旨在從 Steam 平台大規模地擷取**所有遊戲**的元數據與趨勢數據，並將其結構化地存儲在 **PostgreSQL** 資料庫中，以供後續的商業智慧 (BI) 分析與視覺化應用。
 
 此專案採用了現代化的 PaaS (平台即服務) 架構，透過「基礎設施即代碼」實現了極簡的部署與維護流程。
+
+> **重要提示**: 由於目標是抓取 Steam 全部的數十萬款遊戲，單次完整任務的執行時間可能長達數小時。在 Render 的免費方案上執行此任務可能會因資源限制而中斷。建議將此作為一次性的數據初始化任務，或在更強大的付費方案 (如 Render Background Worker) 上運行。
 
 ## 專案亮點 (Key Features)
 
 *   **高效能非同步處理 (High-Performance Async IO)**：採用 `FastAPI` 搭配 `httpx` 與 `asyncio`，能夠並行處理對多個 Steam API 的大量請求，極大地壓縮了數據獲取時間。
-*   **ORM 資料模型 (Object-Relational Mapping)**：使用 `SQLAlchemy` 將資料庫資料表對映為 Python 物件，讓資料操作更安全、更直觀。
+*   **穩健的批次處理 (Robust Batch Processing)**：以批次方式處理數十萬筆資料，有效控制記憶體使用並規避 API 速率限制。
 *   **增量更新 (Upsert Logic)**：利用 PostgreSQL 的 `ON CONFLICT DO UPDATE` 功能，高效地插入新遊戲資料或更新現有遊戲資料，避免重複工作。
 *   **安全的密鑰管理 (Secure Secret Management)**：透過 Render 平台的環境變數管理 API 金鑰，符合雲端安全最佳實踐。
 *   **聲明式部署 (Declarative Deployment)**：僅需一個 `render.yaml` 檔案即可定義所有雲端資源（資料庫、Web 服務、排程），實現「基礎設施即代碼」。
