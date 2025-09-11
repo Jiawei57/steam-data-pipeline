@@ -44,7 +44,7 @@ CONCURRENCY_LIMIT = int(os.getenv("SCRAPER_CONCURRENCY_LIMIT", 10))
 semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
 
 # Use a single, reusable httpx client for performance
-http_client = httpx.AsyncClient(timeout=20.0)
+http_client = httpx.AsyncClient(timeout=20.0, follow_redirects=True)
 
 # --- Database Setup (SQLAlchemy ORM) ---
 
