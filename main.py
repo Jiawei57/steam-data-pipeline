@@ -8,7 +8,7 @@ import httpx
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from sqlalchemy import create_engine, Column, String, Integer, TIMESTAMP, text, inspect
-from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.orm import sessionmaker, declarative_base, Session
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from dotenv import load_dotenv
 
@@ -245,6 +245,26 @@ app = FastAPI(
     description="An automated pipeline to scrape Steam data and store it in a PostgreSQL database.",
     version="2.0.0",
 )
+
+# --- Dependency for DB Session ---
+def get_db():
+    """Dependency to get a new database session for each request."""
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+@app.get("/games", summary="Fetch a few sample game records", tags=["Data"])
+def get_games(db: Session = Depends(get_db)):
+    """
+    A simple endpoint to retrieve the first 5 game metadata records
+    from the database to verify that data exists.
+    """
+    games = db.query(GamesMetadata).limit(5).all()
+    if not games:
+        return {"message": "No game data found. Has the scraper been run yet?"}
+    return games
 
 @app.on_event("shutdown")
 async def shutdown_event():
