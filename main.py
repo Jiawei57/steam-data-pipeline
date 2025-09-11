@@ -297,7 +297,10 @@ async def scrape_and_store_data():
             valid_metadata = [m for m in metadata_results if m and m.get("name")]
 
             if valid_metadata:
-                stmt = pg_insert(GamesMetadata).values(valid_metadata)
+                # Prepare a clean list of dictionaries for the database, excluding the temporary 'price_overview' key.
+                metadata_to_upsert = [{k: v for k, v in m.items() if k != 'price_overview'} for m in valid_metadata]
+                
+                stmt = pg_insert(GamesMetadata).values(metadata_to_upsert)
                 update_stmt = stmt.on_conflict_do_update(
                     index_elements=['app_id'],
                     set_={col.name: getattr(stmt.excluded, col.name) for col in GamesMetadata.__table__.columns if col.name != 'app_id'}
