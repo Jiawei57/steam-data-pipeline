@@ -30,29 +30,35 @@
 
 ## 部署指南 (Deployment Guide)
 
-本專案的部署流程極其簡單，完全基於 Git 和 Render 的整合。
+本專案的部署流程分為兩個部分：建立資料庫和建立背景工人服務。
 
 ### 前置準備
 1.  一個 GitHub 帳號。
 2.  一個 Render 帳號 (可使用 GitHub 帳號登入)。
 3.  將此專案 Fork 到您自己的 GitHub 帳號下，或是建立一個新的 repository 並將程式碼推送上去。
 
-### 部署步驟
-1.  登入 Render 儀表板。
-2.  點擊 **New +** > **Blueprint**。
-3.  連接您存放此專案的 GitHub repository。
-4.  Render 會自動偵測到 `render.yaml` 檔案。確認服務內容後，點擊 **Apply**。
-5.  Render 會開始建立您的 PostgreSQL 資料庫和 Web 服務。
-6.  部署完成後，前往 Web 服務的 **Environment** 頁籤，手動新增以下環境變數並儲存：
+### 步驟一：建立 PostgreSQL 資料庫
+1.  在 Render 儀表板，點擊 **New +** > **PostgreSQL**。
+2.  設定一個名稱 (例如 `steam-db`) 和資料庫名稱 (例如 `steam_data`)。
+3.  選擇 `Free` 方案並點擊 **Create Database**。
+
+### 步驟二：建立 Background Worker
+1.  在 Render 儀表板，點擊 **New +** > **Background Worker**。
+2.  連接您存放此專案的 GitHub repository。
+3.  設定一個名稱 (例如 `steam-scraper-worker`)。
+4.  **Start Command** 填入: `python runner.py`
+5.  選擇 `Free` 方案並點擊 **Create Background Worker**。
+6.  部署開始後，前往服務的 **Environment** 頁籤，手動新增以下環境變數並儲存：
+    *   `DATABASE_URL`: 點擊輸入框，從下拉選單中選擇您剛剛建立的 `steam-db` 資料庫的 `Internal Connection String`。
     *   `STEAM_API_KEY`: 您的 Steam API 金鑰。
     *   `TWITCH_CLIENT_ID`: (可選) 您的 Twitch Client ID。
     *   `TWITCH_CLIENT_SECRET`: (可選) 您的 Twitch Client Secret。
 7.  儲存環境變數後，Render 會自動重新部署您的服務。
 
-部署完成！Render 的 Cron Job 會根據 `render.yaml` 中設定的排程，自動呼叫您的 API 來執行數據抓取。
+部署完成！您的背景工人將在啟動後自動開始執行數據抓取任務。如果它被重啟，它會自動從上次的進度繼續。
 
 ### 更新服務
-每當您將新的程式碼改動推送到 GitHub repository 的主分支時，Render 都會**自動**抓取最新的程式碼並重新部署您的 Web 服務，實現真正的持續部署 (Continuous Deployment)。
+每當您將新的程式碼改動推送到 GitHub repository 的主分支時，Render 都會**自動**抓取最新的程式碼並重新部署您的背景工人服務，實現真正的持續部署 (Continuous Deployment)。
 
 ## 本地開發 (Local Development)
 
@@ -60,7 +66,7 @@
 2.  建立一個 `.env` 檔案，並填入您的本地資料庫 URL 和 API 金鑰 (參考 `.env.example`)。
 3.  安裝 Python 依賴：`pip install -r requirements.txt`。
 4.  啟動本地伺服器：`uvicorn main:app --reload`。
-5.  您的服務將在 `http://127.0.0.1:8000` 上運行。
+5.  若要執行爬蟲，請運行：`python runner.py`。
 
 ## 連接視覺化工具
 1.  在 Render 儀表板中，找到您的 PostgreSQL 資料庫服務。

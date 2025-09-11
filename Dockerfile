@@ -21,7 +21,6 @@ COPY --chown=appuser:0 *.py ./
 # Switch to the non-root user.
 USER appuser
 
-# Run the web service on container startup.
-# Use the "exec" form of CMD. This is the most direct and reliable way to start
-# the application. The application object is now in 'main.py' at the root of the WORKDIR.
-CMD exec gunicorn --bind "0.0.0.0:${PORT:-8080}" --workers 2 --timeout 0 -k uvicorn.workers.UvicornWorker main:app
+# Run the runner script on container startup.
+# This starts the long-running scraping task directly.
+CMD ["python", "runner.py"]

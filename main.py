@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional, Tuple
 
 import httpx
+import json
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
 from sqlalchemy import create_engine, Column, String, Integer, TIMESTAMP, text, inspect
@@ -38,8 +39,8 @@ twitch_token_cache: Dict[str, Any] = {"token": None, "expires_at": datetime.utcn
 is_scraping: bool = False
 
 # --- Constants ---
-BATCH_SIZE = 100  # Process 100 apps at a time to manage memory
-CONCURRENCY_LIMIT = 10  # Allow only 10 concurrent requests to Steam API to avoid 403 errors
+BATCH_SIZE = int(os.getenv("SCRAPER_BATCH_SIZE", 100))
+CONCURRENCY_LIMIT = int(os.getenv("SCRAPER_CONCURRENCY_LIMIT", 10))
 semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
 
 # Use a single, reusable httpx client for performance
@@ -66,12 +67,23 @@ class GamesMetadata(Base):
 class GamesTimeseries(Base):
     __tablename__ = "games_timeseries"
     id = Column(Integer, primary_key=True, autoincrement=True)
-    app_id = Column(String, index=True)
+    app_id = Column(String) # The composite index below covers this
     timestamp = Column(TIMESTAMP(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
     price = Column(String)
     discount_percent = Column(Integer)
     player_count = Column(Integer)
     streamer_count = Column(Integer)
+
+    __table_args__ = (
+        # Composite index for efficient querying of a game's history
+        Index('ix_games_timeseries_app_id_timestamp', 'app_id', 'timestamp'),
+    )
+
+class ScrapingState(Base):
+    """A simple key-value table to store the state of the scraping process."""
+    __tablename__ = "scraping_state"
+    key = Column(String, primary_key=True)
+    value = Column(String)
 
 # --- External API Services ---
 
@@ -85,9 +97,9 @@ def retry_on_error(max_retries: int = 3, base_delay: float = 1.0):
                     # Use a semaphore to limit concurrency
                     async with semaphore:
                         return await func(*args, **kwargs)
-                except httpx.HTTPStatusError as e:
+                except (httpx.HTTPStatusError, httpx.RequestError, json.JSONDecodeError) as e:
                     # Retry on server errors (5xx) or rate limiting (429)
-                    if e.response.status_code >= 500 or e.response.status_code == 429:
+                    if isinstance(e, httpx.HTTPStatusError) and (e.response.status_code >= 500 or e.response.status_code == 429):
                         if attempt < max_retries - 1:
                             delay = base_delay * (2 ** attempt)
                             logging.warning(f"Request failed with {e.response.status_code}. Retrying in {delay:.2f} seconds... (Attempt {attempt + 1}/{max_retries})")
@@ -95,9 +107,18 @@ def retry_on_error(max_retries: int = 3, base_delay: float = 1.0):
                         else:
                             logging.error(f"Request failed after {max_retries} attempts. Giving up. Error: {e}")
                             return None
+                    # Retry on network errors or JSON decoding errors
+                    elif isinstance(e, (httpx.RequestError, json.JSONDecodeError)):
+                        if attempt < max_retries - 1:
+                            delay = base_delay * (2 ** attempt)
+                            logging.warning(f"Request failed with {type(e).__name__}. Retrying in {delay:.2f} seconds... (Attempt {attempt + 1}/{max_retries})")
+                            await asyncio.sleep(delay)
+                        else:
+                            logging.error(f"Request failed after {max_retries} attempts. Giving up. Error: {e}")
+                            return None
                     else:
                         # For other client errors (like 403, 404), don't retry, just log and fail.
-                        logging.error(f"Client error {e.response.status_code} for {e.request.url}. Not retrying. Error: {e}")
+                        logging.error(f"Unrecoverable client error. Not retrying. Error: {e}")
                         return None
             return None
         return wrapper
@@ -171,13 +192,22 @@ async def fetch_game_details(app_id: str) -> Optional[Dict[str, Any]]:
                 "developer": ", ".join(details.get("developers", [])),
                 "publisher": ", ".join(details.get("publishers", [])),
                 "genres": ", ".join([g["description"] for g in details.get("genres", [])]),
+                # Also extract price info here to avoid a second API call
+                "price_overview": details.get("price_overview", {
+                    "final_formatted": "N/A",
+                    "discount_percent": 0
+                })
             }
     except Exception as e:
         logging.error(f"Failed to fetch details for app_id {app_id}: {e}")
     return None
 
+def normalize_game_name(name: str) -> str:
+    """Removes common symbols that interfere with API lookups."""
+    return name.replace('™', '').replace('®', '').strip()
+
 @retry_on_error()
-async def fetch_timeseries_data(app_id: str, game_name: str, twitch_token: Optional[str]) -> Optional[Dict[str, Any]]:
+async def fetch_timeseries_data(app_id: str, game_name: str, price_info: Dict, twitch_token: Optional[str]) -> Optional[Dict[str, Any]]:
     """Fetches dynamic, time-series data for a single game."""
     # 1. Fetch player count
     player_count = 0
@@ -194,25 +224,17 @@ async def fetch_timeseries_data(app_id: str, game_name: str, twitch_token: Optio
     streamer_count = 0
     if twitch_token and game_name:
         try:
-            stream_url = f"https://api.twitch.tv/helix/streams?game_name={game_name}"
+            normalized_name = normalize_game_name(game_name)
+            stream_url = f"https://api.twitch.tv/helix/streams?game_name={normalized_name}"
             headers = {"Client-ID": TWITCH_CLIENT_ID, "Authorization": f"Bearer {twitch_token}"}
             stream_response = await http_client.get(stream_url, headers=headers)
             streamer_count = len(stream_response.json().get("data", []))
         except Exception:
             logging.warning(f"Could not fetch streamer count for game '{game_name}'.")
 
-    # 3. Fetch price (simplified from game details endpoint)
-    price = "N/A"
-    discount = 0
-    try:
-        details_url = f"https://store.steampowered.com/api/appdetails?appids={app_id}"
-        details_response = await http_client.get(details_url)
-        details_data = details_response.json().get(app_id, {}).get("data", {})
-        if price_overview := details_data.get("price_overview"):
-            price = price_overview.get("final_formatted")
-            discount = price_overview.get("discount_percent")
-    except Exception:
-        logging.warning(f"Could not fetch price for app_id {app_id}.")
+    # 3. Use the pre-fetched price information
+    price = price_info.get("final_formatted", "N/A")
+    discount = price_info.get("discount_percent", 0)
 
     return {
         "app_id": app_id,
@@ -226,7 +248,7 @@ async def fetch_timeseries_data(app_id: str, game_name: str, twitch_token: Optio
 # --- Main Pipeline Logic ---
 
 async def scrape_and_store_data():
-    """The main pipeline function that orchestrates the entire scraping process."""
+    """The main pipeline function that orchestrates the entire scraping process, with graceful shutdown support."""
     global is_scraping
     if is_scraping:
         logging.warning("Scraping process is already running. Skipping new trigger.")
@@ -239,6 +261,13 @@ async def scrape_and_store_data():
         # Ensure tables exist
         Base.metadata.create_all(bind=engine)
 
+        # --- Resume Logic ---
+        start_index = 0
+        state = db.query(ScrapingState).filter(ScrapingState.key == 'last_processed_index').first()
+        if state and state.value.isdigit():
+            start_index = int(state.value)
+            logging.info(f"Resuming scrape from index {start_index}.")
+
         all_app_ids = await fetch_all_app_ids()
         if not all_app_ids:
             logging.warning("Aborting scrape: could not fetch the list of all app IDs.")
@@ -247,10 +276,19 @@ async def scrape_and_store_data():
         twitch_token = await get_twitch_token()
 
         total_apps = len(all_app_ids)
+        if start_index >= total_apps:
+            logging.info("All apps have already been processed. Nothing to do.")
+            return
         logging.info(f"Starting to process {total_apps} apps in batches of {BATCH_SIZE}. This will take a very long time...")
 
-        for i in range(0, total_apps, BATCH_SIZE):
+        for i in range(start_index, total_apps, BATCH_SIZE):
             batch_ids = all_app_ids[i:i + BATCH_SIZE]
+            
+            # Graceful shutdown check
+            if shutdown_event.is_set():
+                logging.info("Shutdown signal received. Stopping before processing the next batch.")
+                break
+
             logging.info(f"Processing batch {i//BATCH_SIZE + 1}/{(total_apps + BATCH_SIZE - 1)//BATCH_SIZE} (apps {i+1}-{i+len(batch_ids)})...")
 
             # 1. Fetch and Upsert Metadata for the batch
@@ -269,9 +307,9 @@ async def scrape_and_store_data():
                 logging.info(f"Upserted {len(valid_metadata)} metadata records for this batch.")
 
             # 2. Fetch and Insert Timeseries data for the batch
-            apps_to_fetch = [(m["app_id"], m["name"]) for m in valid_metadata if m.get("type") == "game" and m.get("name")]
+            apps_to_fetch = [(m["app_id"], m["name"], m.get("price_overview", {})) for m in valid_metadata if m.get("type") == "game" and m.get("name")]
             if apps_to_fetch:
-                timeseries_tasks = [fetch_timeseries_data(app_id, name, twitch_token) for app_id, name in apps_to_fetch]
+                timeseries_tasks = [fetch_timeseries_data(app_id, name, price_info, twitch_token) for app_id, name, price_info in apps_to_fetch]
                 timeseries_results = await asyncio.gather(*timeseries_tasks)
                 valid_timeseries = [t for t in timeseries_results if t]
 
@@ -279,9 +317,20 @@ async def scrape_and_store_data():
                     db.bulk_insert_mappings(GamesTimeseries, valid_timeseries)
                     db.commit()
                     logging.info(f"Inserted {len(valid_timeseries)} timeseries records for this batch.")
+
+            # --- State Update ---
+            # After a batch is fully processed, save the progress.
+            next_index = i + len(batch_ids)
+            state_update_stmt = pg_insert(ScrapingState).values(key='last_processed_index', value=str(next_index))
+            state_update_stmt = state_update_stmt.on_conflict_do_update(
+                index_elements=['key'], set_={'value': state_update_stmt.excluded.value}
+            )
+            db.execute(state_update_stmt)
+            db.commit()
+            logging.info(f"Successfully saved progress. Next batch will start from index {next_index}.")
             
             # IMPORTANT: Pause between batches to respect API rate limits
-            logging.info("Pausing for 2 seconds before next batch...")
+            logging.info("Pausing for 5 seconds before next batch for safety...")
             await asyncio.sleep(5)
 
     except Exception as e:
@@ -290,14 +339,17 @@ async def scrape_and_store_data():
     finally:
         is_scraping = False # Release the lock
         db.close()
-        logging.info("Scraping process finished.")
+        if shutdown_event.is_set():
+            logging.info("Scraping process gracefully shut down.")
+        else:
+            logging.info("Scraping process finished.")
 
 # --- FastAPI Application ---
 
 app = FastAPI(
     title="Steam Data Pipeline",
     description="An automated pipeline to scrape all Steam game data and store it in a PostgreSQL database.",
-    version="2.0.0",
+    version="3.0.0", # Version bump for major architectural improvements
 )
 
 # --- Dependency for DB Session ---
@@ -321,7 +373,7 @@ def get_games(db: Session = Depends(get_db)):
     return games
 
 @app.on_event("shutdown")
-async def shutdown_event():
+async def on_shutdown():
     """Close the httpx client gracefully on application shutdown."""
     await http_client.aclose()
 
@@ -338,3 +390,6 @@ async def trigger_scrape(background_tasks: BackgroundTasks):
     """
     background_tasks.add_task(scrape_and_store_data)
     return {"message": "Data scraping process has been triggered in the background."}
+
+# --- Global Shutdown Event for Graceful Worker Shutdown ---
+shutdown_event = asyncio.Event()

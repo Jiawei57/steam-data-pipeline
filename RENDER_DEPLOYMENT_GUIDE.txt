@@ -1,0 +1,136 @@
+============================================================
+ Render 部署指南 - Steam 數據管道 (v3.0)
+============================================================
+
+### 簡介
+
+本指南將引導您將 Steam 數據管道專案部署到 Render 平台。
+此專案包含兩個核心服務：一個 PostgreSQL 資料庫和一個用於執行爬蟲的背景工人 (Background Worker)。
+
+我們將採用手動部署流程，以確保設定完全符合目前的專業架構。
+**重要提示：請忽略專案中的 `render.yaml` 檔案**，因為它對應的是舊的架構，已不再適用。
+
+---
+
+### 前置準備
+
+1.  **確認程式碼已推送**：確保所有最新的程式碼修改都已推送到您的 GitHub repository 的 `main` 分支。
+2.  **登入 Render**：打開您的網頁瀏覽器並登入您的 Render 帳號。
+
+---
+
+### 步驟一：建立 PostgreSQL 資料庫
+
+1.  在 Render 主儀表板，點擊右上角的 **New +** 按鈕，然後選擇 **PostgreSQL**。
+2.  在設定頁面中，填入以下資訊：
+    *   **Name**: `steam-db` (建議使用此名稱以便識別)
+    *   **Database**: `steam_data`
+    *   **Region**: `Oregon (US West)`
+    *   **Plan**: `Free`
+3.  點擊頁面底部的 **Create Database**。
+4.  請耐心等待幾分鐘，直到資料庫的狀態顯示為 **`Available`** (可用)。
+
+---
+
+### 步驟二：建立 Background Worker
+
+1.  回到 Render 主儀表板，點擊 **New +** > **Background Worker**。
+2.  連接您的 GitHub 帳號，並選擇您存放此專案的 repository。
+3.  在設定頁面中，填入以下資訊：
+    *   **Name**: `steam-scraper-worker` (建議使用此名稱)
+    *   **Region**: `Oregon (US West)` (務必選擇與您的資料庫相同的區域)
+    *   **Branch**: `main`
+    *   **Start Command**: `python runner.py` (這是最關鍵的一步)
+    *   **Instance Type**: `Free`
+4.  點擊頁面底部的 **Create Background Worker**。
+    *(注意：第一次部署很可能會失敗，這是完全正常的，因為還未設定環境變數。)*
+
+---
+
+### 步驟三：設定環境變數 (最關鍵的一步)
+
+1.  部署失敗後，進入剛剛建立的 `steam-scraper-worker` 的儀表板。
+2.  點擊左側的 **Environment** 頁籤。
+3.  在 "Environment Variables" 區塊，點擊 **Add Environment Variable**，逐一新增所有必要的變數：
+    *   **資料庫連線**:
+        *   Key: `DATABASE_URL`, Value: (點擊輸入框，從下拉選單選擇 `steam-db (PostgreSQL)` > `Internal Connection String`)
+    *   **API 金鑰**:
+        *   Key: `STEAM_API_KEY`, Value: `貼上您的 Steam API 金鑰`
+        *   Key: `TWITCH_CLIENT_ID`, Value: `貼上您的 Twitch Client ID`
+        *   Key: `TWITCH_CLIENT_SECRET`, Value: `貼上您的 Twitch Client Secret`
+    *   **(可選) 效能參數**:
+        *   Key: `SCRAPER_BATCH_SIZE`, Value: `100`
+        *   Key: `SCRAPER_CONCURRENCY_LIMIT`, Value: `10`
+4.  點擊頁面底部的 **Save Changes**。
+
+---
+
+### 步驟四：驗證與監控
+
+1.  **自動重新部署**：儲存環境變數後，Render 會自動觸發一次新的部署。
+2.  **監控日誌**：進入 `steam-scraper-worker` 的 **Logs** 頁籤。您應該會看到日誌輸出，代表您的爬蟲已經成功啟動並開始工作。
+3.  **確認資料寫入**：您可以隨時使用 DBeaver 等工具連接到您的 `steam-db` 資料庫，查詢 `scraping_state` 表來查看最新的進度。
+
+恭喜您！您已成功部署一個專業、穩健且可恢復的大規模數據抓取任務。
+
+---
+
+### 如何用 Git 更新部署
+
+您的專案已啟用 Render 的自動部署 (Auto-Deploy) 功能。這意味著您不需要在 Render 網站上手動操作來更新您的服務。整個更新流程完全透過 Git 完成。
+
+**核心原理**：每當您將新的程式碼改動推送到您連接的 GitHub repository 的 `main` 分支時，Render 就會自動觸發一次新的部署。
+
+**更新步驟**:
+
+1.  **在本地修改程式碼**:
+    在您的專案資料夾中，對任何您想更新的檔案進行修改 (例如 `main.py`, `runner.py` 等)。
+
+2.  **將變更加入 Git 暫存區**:
+    打開終端機，切換到您的專案目錄，然後執行：
+    ```bash
+    git add .
+    ```
+
+3.  **提交您的變更**:
+    為這次的更新建立一個快照，並附上描述性的訊息：
+    ```bash
+    git commit -m "一個描述您這次更新內容的訊息"
+    ```
+    *範例: `git commit -m "Refactor: 優化 API 重試邏輯"`*
+
+4.  **將變更推送到 GitHub (觸發部署)**:
+    執行以下指令，將您的提交上傳到 GitHub：
+    ```bash
+    git push origin main
+    ```
+
+5.  **在 Render 上監控部署**:
+    推送完成後，您可以前往 Render 儀表板，進入您的 `steam-scraper-worker` 服務，並在 **Events** 或 **Logs** 頁籤中查看新部署的進度。
+
+---
+
+### 步驟五：驗證數據增長
+
+部署完成後，您的背景工人會持續運行。您可以透過以下方法，使用 DBeaver 等資料庫客戶端工具來確認資料正在有效地、逐漸地增加。
+
+1.  **檢查爬取進度**:
+    執行以下 SQL 查詢，查看爬蟲處理到哪個批次。`value` 欄位會隨著時間穩定增長，代表您的「可恢復性」機制正在正常運作。
+    ```sql
+    SELECT * FROM scraping_state WHERE key = 'last_processed_index';
+    ```
+
+2.  **確認元數據與時間序列數據數量**:
+    執行以下查詢，確認資料表的總記錄數。這兩個數字應該會隨著爬蟲的進度而穩定增加。
+    ```sql
+    SELECT COUNT(*) FROM games_metadata;
+    SELECT COUNT(*) FROM games_timeseries;
+    ```
+
+3.  **抽樣檢查資料有效性**:
+    隨機抽取幾筆資料，檢查其內容是否符合預期，例如查看最新的時間序列資料。
+    ```sql
+    SELECT * FROM games_timeseries ORDER BY timestamp DESC LIMIT 5;
+    ```
+
+透過定期執行這些查詢，您就可以確信您的數據管道正在健康、穩定地運行。
