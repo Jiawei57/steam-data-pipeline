@@ -116,7 +116,7 @@ def retry_on_error(max_retries: int = 3, base_delay: float = 1.0):
                     if isinstance(e, httpx.HTTPStatusError) and (e.response.status_code >= 500 or e.response.status_code in retriable_statuses):
                         if attempt < max_retries - 1:
                             delay = base_delay * (2 ** attempt)
-                            logging.warning(f"Request failed with {e.response.status_code}. Retrying in {delay:.2f} seconds... (Attempt {attempt + 1}/{max_retries})")
+                            logging.warning(f"Request failed with HTTP status {e.response.status_code}. Retrying in {delay:.2f} seconds... (Attempt {attempt + 1}/{max_retries})")
                             await asyncio.sleep(delay)
                         else:
                             logging.error(f"Request failed after {max_retries} attempts. Giving up. Error: {e}")
@@ -125,7 +125,7 @@ def retry_on_error(max_retries: int = 3, base_delay: float = 1.0):
                     elif isinstance(e, (httpx.RequestError, json.JSONDecodeError)):
                         if attempt < max_retries - 1:
                             delay = base_delay * (2 ** attempt)
-                            logging.warning(f"Request failed with {type(e).__name__}. Retrying in {delay:.2f} seconds... (Attempt {attempt + 1}/{max_retries})")
+                            logging.warning(f"Request failed due to a network/proxy issue ({type(e).__name__}). Retrying in {delay:.2f} seconds... (Attempt {attempt + 1}/{max_retries})")
                             await asyncio.sleep(delay)
                         else:
                             logging.error(f"Request failed after {max_retries} attempts. Giving up. Error: {e}")
@@ -179,19 +179,15 @@ async def fetch_paginated_list(base_url: str, limit: int, selector: str, id_extr
         # Steam search pages use a 'page' query parameter.
         url = f"{base_url}&page={page}"
         logging.info(f"Fetching page {page} from {url}")
-        try:
-            response = await http_client.get(url)
-            response.raise_for_status()
-            soup = BeautifulSoup(response.text, "html.parser")
-            page_app_ids = [id_extractor(row) for row in soup.select(selector) if id_extractor(row)]
-            if not page_app_ids:
-                break # Stop if a page has no results
-            all_app_ids.extend(page_app_ids)
-            page += 1
-            await asyncio.sleep(1) # Be polite and wait a second between page loads
-        except Exception as e:
-            logging.error(f"Failed to scrape page {page} of {base_url}: {e}")
-            break # Stop on error
+        response = await http_client.get(url)
+        response.raise_for_status() # Let exceptions bubble up to the retry decorator
+        soup = BeautifulSoup(response.text, "html.parser")
+        page_app_ids = [id_extractor(row) for row in soup.select(selector) if id_extractor(row)]
+        if not page_app_ids:
+            break # Stop if a page has no results, this is not an error.
+        all_app_ids.extend(page_app_ids)
+        page += 1
+        await asyncio.sleep(1) # Be polite and wait a second between page loads
     return all_app_ids[:limit]
 
 @retry_on_error()
