@@ -55,27 +55,22 @@ proxy_list = [url.strip() for url in PROXY_URLS.split(',')] if PROXY_URLS else [
 if proxy_list:
     logging.info(f"Loaded {len(proxy_list)} proxies for rotation.")
 
-# --- Client with Advanced Proxy Mounting ---
-
-# Create a transport that uses a random proxy for each connection
-proxy_transport = httpx.AsyncProxyTransport.from_url(random.choice(proxy_list)) if proxy_list else None
-
-# Mount the proxy transport only for requests to store.steampowered.com
-mounts = {"https://store.steampowered.com": proxy_transport} if proxy_transport else {}
-
-http_client = httpx.AsyncClient(
-    timeout=30.0, 
-    follow_redirects=True, 
-    headers=headers,
-    mounts=mounts
-)
-
 def get_random_proxy_config() -> Optional[Dict[str, str]]:
     """Selects a random proxy from the list and returns it in httpx format."""
     if not proxy_list:
         return None
     proxy_url = random.choice(proxy_list)
     return {"http://": proxy_url, "https://": proxy_url}
+
+# --- Client with Advanced Proxy Mounting ---
+
+# Create a transport that uses a random proxy. Note: This proxy is chosen once at startup for the main client.
+proxy_transport = httpx.AsyncProxyTransport.from_url(random.choice(proxy_list)) if proxy_list else None
+
+# Mount the proxy transport only for requests to store.steampowered.com
+mounts = {"https://store.steampowered.com": proxy_transport} if proxy_transport else {}
+
+http_client = httpx.AsyncClient(timeout=30.0, follow_redirects=True, headers=headers, mounts=mounts)
 
 # --- Database Setup (SQLAlchemy ORM) ---
 
@@ -134,43 +129,41 @@ async def check_proxy_health() -> bool:
     logging.info("Performing robust proxy health check...")
     test_url = "https://ip.decodo.com/json" # Use the official endpoint provided by the proxy service
 
-    # For health check, we create a temporary client for each proxy to test it in isolation.
+    # For health checks, we create temporary clients to test each proxy in isolation.
     proxies_to_check = random.sample(proxy_list, min(3, len(proxy_list)))    
 
     for i, proxy_url in enumerate(proxies_to_check):
-        proxy_config = {"http://": proxy_url, "https://": proxy_url}
         logging.info(f"Health check attempt {i+1}/{len(proxies_to_check)} on proxy ending in '...{proxy_url[-10:]}'")
-        # Use our own robust request maker for the health check itself.
-        # We only need one successful attempt, so we can set max_retries to 1 for speed.
-        response = await make_request_with_retry('GET', test_url, temp_proxies=proxy_config, timeout=15.0)
-        if response and response.status_code == 200:
-            logging.info(f"Proxy health check successful on attempt {i+1}. Response: {response.json()}")
-            return True # If one proxy works, the pool is considered healthy.
-        # If make_request_with_retry returns None, it means it failed after its own retries.
-        # We just log it and continue to the next proxy in our sample.
+        try:
+            # Create a temporary client configured to use ONLY this specific proxy
+            async with httpx.AsyncClient(proxies=proxy_url, timeout=15.0) as temp_client:
+                response = await temp_client.get(test_url)
+                response.raise_for_status()
+                logging.info(f"Proxy health check successful on attempt {i+1}. Response: {response.json()}")
+                return True # If one proxy works, the pool is considered healthy.
+        except Exception as e:
+            logging.warning(f"Health check attempt {i+1} with proxy ...{proxy_url[-10:]} failed: {type(e).__name__}")
+            # Continue to the next proxy in the sample
     
     logging.critical(f"Proxy health check FAILED after trying {len(proxies_to_check)} different proxies. The proxy pool is likely down or misconfigured.")
     return False
 
-async def make_request_with_retry(method: str, url: str, temp_proxies: Optional[Dict] = None, **kwargs) -> Optional[httpx.Response]:
+async def make_request_with_retry(method: str, url: str, **kwargs) -> Optional[httpx.Response]:
     """Makes an HTTP request with retry logic, using a semaphore to limit concurrency."""
     max_retries = 3
     base_delay = 2.0
     for attempt in range(max_retries):
         try:
             async with semaphore:
-                # Use a temporary client only if temp_proxies are provided (for health check)
-                client = httpx.AsyncClient(proxies=temp_proxies) if temp_proxies else http_client
-                
+                # Always use the global http_client. Proxying is handled by its 'mounts' config.
                 if method.upper() == 'GET':
-                    response = await client.get(url, **kwargs)
+                    response = await http_client.get(url, **kwargs)
                 elif method.upper() == 'POST':
-                    response = await client.post(url, **kwargs)
+                    response = await http_client.post(url, **kwargs)
                 else:
                     logging.error(f"Unsupported HTTP method: {method}")
                     return None
                 response.raise_for_status()
-                if temp_proxies: await client.aclose() # Close temporary client
                 return response
         except (httpx.HTTPStatusError, httpx.RequestError, httpx.ProxyError, json.JSONDecodeError) as e:
             retriable_statuses = {403, 407, 429, 500, 502, 503, 504}
@@ -186,7 +179,6 @@ async def make_request_with_retry(method: str, url: str, temp_proxies: Optional[
                     logging.error(f"Request {method} {url} failed after {max_retries} attempts. Giving up. Final error: {e}")
             else:
                 logging.error(f"Unrecoverable client error for {method} {url}. Not retrying. Error: {e}")
-                if temp_proxies: await client.aclose() # Close temporary client
                 break # Exit loop for non-retriable errors
     return None
 
