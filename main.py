@@ -213,7 +213,7 @@ async def fetch_all_app_ids() -> List[str]:
     """Fetches all App IDs from the official Steam API."""
     url = "https://api.steampowered.com/ISteamApps/GetAppList/v2/" # This is a public API, no proxy needed.
     try:
-        response = await http_get(url) # This function already has retry logic
+        response = await http_get(url)
         if not response:
             raise Exception("http_get returned None")
         data = response.json()
@@ -247,7 +247,7 @@ async def fetch_most_played_ids() -> List[str]:
     logging.info("Fetching Most Played list...")
     url = "https://store.steampowered.com/charts/mostplayed"
     # This request goes to store.steampowered.com, so we use the proxy.
-    response = await http_get(url, proxies=get_random_proxy_config()) # This function already has retry logic
+    response = await http_get(url, proxies=get_random_proxy_config())
     if not response:
         raise Exception("Failed to fetch most played page after multiple retries.")
     soup = BeautifulSoup(response.text, "html.parser")
@@ -262,7 +262,7 @@ async def fetch_game_details(app_id: str) -> Optional[Dict[str, Any]]: # Keep re
     url = f"https://store.steampowered.com/api/appdetails?appids={app_id}" # Internal store API, needs proxy.
     try:
         # This request goes to store.steampowered.com, so we use the proxy.
-        response = await http_get(url, proxies=get_random_proxy_config()) # This function already has retry logic
+        response = await http_get(url, proxies=get_random_proxy_config())
         if not response:
             raise Exception("http_get returned None")
         data = response.json().get(app_id, {})
@@ -298,7 +298,7 @@ async def fetch_timeseries_data(app_id: str, game_name: str, price_info: Dict, t
     if STEAM_API_KEY:
         try:
             player_url = f"https://api.steampowered.com/ISteamUserStats/GetNumberOfCurrentPlayers/v1/?appid={app_id}&key={STEAM_API_KEY}" # Public API, no proxy.
-            player_response = await http_get(player_url) # This function already has retry logic
+            player_response = await http_get(player_url)
             if not player_response:
                 raise Exception("http_get for player count returned None")
             player_data = player_response.json().get("response", {})
@@ -313,7 +313,7 @@ async def fetch_timeseries_data(app_id: str, game_name: str, price_info: Dict, t
             normalized_name = normalize_game_name(game_name)
             stream_url = f"https://api.twitch.tv/helix/streams?game_name={normalized_name}" # Twitch API, no proxy.
             headers = {"Client-ID": TWITCH_CLIENT_ID, "Authorization": f"Bearer {twitch_token}"}
-            stream_response = await http_get(stream_url, headers=headers) # This function already has retry logic
+            stream_response = await http_get(stream_url, headers=headers)
             if not stream_response:
                 raise Exception("http_get for streamer count returned None")
             streamer_count = len(stream_response.json().get("data", []))
