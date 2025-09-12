@@ -19,6 +19,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy all Python source files. config.ini is for local dev and is not copied.
 COPY --chown=appuser:0 *.py ./
 
+# Also copy the proxy's CA certificate into the container.
+COPY --chown=appuser:0 brightdata_ca.pem .
+
 # Now, switch to the non-root user to run the application.
 USER appuser
 

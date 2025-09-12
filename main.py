@@ -56,6 +56,9 @@ proxy_list = [url.strip() for url in PROXY_URLS.split(',')] if PROXY_URLS else [
 if proxy_list:
     logging.info(f"Loaded {len(proxy_list)} proxies for rotation.")
 
+# Define the path to the CA certificate bundle within the Docker container.
+BRIGHTDATA_CA_PEM_PATH = '/app/brightdata_ca.pem'
+
 # --- Client with Advanced Proxy Mounting ---
 
 # Select a single proxy URL at startup for the main client's transport.
@@ -63,9 +66,9 @@ if proxy_list:
 proxy_url_for_mount = random.choice(proxy_list) if proxy_list else None
 
 # Mount the proxy transport only for requests to store.steampowered.com
-mounts = {"https://store.steampowered.com": httpx.AsyncHTTPTransport(proxy=proxy_url_for_mount)} if proxy_url_for_mount else {}
+mounts = {"https://store.steampowered.com": httpx.AsyncHTTPTransport(proxy=proxy_url_for_mount, verify=BRIGHTDATA_CA_PEM_PATH)} if proxy_url_for_mount else {}
 
-http_client = httpx.AsyncClient(timeout=30.0, follow_redirects=True, headers=headers, mounts=mounts)
+http_client = httpx.AsyncClient(timeout=30.0, follow_redirects=True, headers=headers, mounts=mounts, verify=BRIGHTDATA_CA_PEM_PATH)
 
 # --- Database Setup (SQLAlchemy ORM) ---
 
@@ -131,7 +134,7 @@ async def check_proxy_health() -> bool:
         try:
             logging.info(f"Health check attempt {i+1}/{len(proxies_to_check)} on proxy ending in '...{proxy_url[-10:]}'")
             # Create a temporary client configured to use ONLY this specific proxy
-            async with httpx.AsyncClient(proxies=proxy_url, timeout=15.0) as temp_client:
+            async with httpx.AsyncClient(proxies=proxy_url, timeout=15.0, verify=BRIGHTDATA_CA_PEM_PATH) as temp_client:
                 response = await temp_client.get(test_url)
                 response.raise_for_status()
                 logging.info(f"Proxy health check successful on attempt {i+1}. Response: {response.json()}")
