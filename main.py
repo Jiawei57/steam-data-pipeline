@@ -49,14 +49,11 @@ headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
 }
 
-# Configure proxies if a PROXY_URL is provided
-proxies = {"http://": PROXY_URL, "https://": PROXY_URL} if PROXY_URL else None
-
 http_client = httpx.AsyncClient(
     timeout=30.0, 
     follow_redirects=True, 
     headers=headers,
-    proxies=proxies
+    proxy=PROXY_URL if PROXY_URL else None
 )
 
 # --- Database Setup (SQLAlchemy ORM) ---
@@ -179,15 +176,15 @@ async def fetch_paginated_list(base_url: str, limit: int, selector: str, id_extr
         # Steam search pages use a 'page' query parameter.
         url = f"{base_url}&page={page}"
         logging.info(f"Fetching page {page} from {url}")
-        response = await http_client.get(url)
-        response.raise_for_status() # Let exceptions bubble up to the retry decorator
+        response = await http_client.get(url) # Let exceptions bubble up to the retry decorator
+        response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
         page_app_ids = [id_extractor(row) for row in soup.select(selector) if id_extractor(row)]
         if not page_app_ids:
-            break # Stop if a page has no results, this is not an error.
+            break  # Stop if a page has no results, this is not an error.
         all_app_ids.extend(page_app_ids)
         page += 1
-        await asyncio.sleep(1) # Be polite and wait a second between page loads
+        await asyncio.sleep(1)  # Be polite and wait a second between page loads
     return all_app_ids[:limit]
 
 @retry_on_error()
