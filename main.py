@@ -135,6 +135,7 @@ def retry_on_error(max_retries: int = 3, base_delay: float = 1.0):
         return wrapper
     return decorator
 
+@retry_on_error()
 async def get_twitch_token() -> Optional[str]:
     """Fetches a Twitch app access token, using a cache to avoid repeated requests."""
     if not TWITCH_CLIENT_ID or not TWITCH_CLIENT_SECRET:
@@ -151,22 +152,19 @@ async def get_twitch_token() -> Optional[str]:
         "client_secret": TWITCH_CLIENT_SECRET,
         "grant_type": "client_credentials",
     }
-    try:
-        response = await http_client.post(url, params=params)
-        response.raise_for_status()
-        data = response.json()
-        token = data["access_token"]
-        expires_in = data.get("expires_in", 3600) # Default to 1 hour
-        
-        # Cache the new token and its expiry time
-        twitch_token_cache["token"] = token
-        twitch_token_cache["expires_at"] = datetime.now(timezone.utc) + timedelta(seconds=expires_in * 0.9) # Refresh before it expires
-        
-        logging.info("Successfully fetched and cached a new Twitch token.")
-        return token
-    except httpx.HTTPStatusError as e:
-        logging.error(f"Failed to get Twitch token: {e.response.status_code} - {e.response.text}")
-        return None
+    # Let the retry decorator handle exceptions
+    response = await http_client.post(url, params=params)
+    response.raise_for_status()
+    data = response.json()
+    token = data["access_token"]
+    expires_in = data.get("expires_in", 3600) # Default to 1 hour
+    
+    # Cache the new token and its expiry time
+    twitch_token_cache["token"] = token
+    twitch_token_cache["expires_at"] = datetime.now(timezone.utc) + timedelta(seconds=expires_in * 0.9) # Refresh before it expires
+    
+    logging.info("Successfully fetched and cached a new Twitch token.")
+    return token
 
 async def fetch_paginated_list(base_url: str, limit: int, selector: str, id_extractor) -> List[str]:
     """A generic function to scrape paginated lists from Steam."""
