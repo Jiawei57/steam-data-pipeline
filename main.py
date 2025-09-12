@@ -55,19 +55,9 @@ proxy_list = [url.strip() for url in PROXY_URLS.split(',')] if PROXY_URLS else [
 if proxy_list:
     logging.info(f"Loaded {len(proxy_list)} proxies for rotation.")
 
-# --- Client with Advanced Proxy Mounting ---
+# --- Database Setup (SQLAlchemy ORM) ---
 
-# Select a single proxy URL at startup for the main client's transport.
-# This provides stability. The health check will verify the broader pool.
-proxy_url_for_mount = random.choice(proxy_list) if proxy_list else None
-
-# Create a transport that uses the selected proxy. This is the correct httpx class.
-proxy_transport = httpx.AsyncHTTPTransport(proxy=proxy_url_for_mount) if proxy_url_for_mount else None
-
-# Mount the proxy transport only for requests to store.steampowered.com
-mounts = {"https://store.steampowered.com": proxy_transport} if proxy_transport else {}
-
-http_client = httpx.AsyncClient(timeout=30.0, follow_redirects=True, headers=headers, mounts=mounts)
+http_client = httpx.AsyncClient(timeout=30.0, follow_redirects=True, headers=headers)
 
 # --- Database Setup (SQLAlchemy ORM) ---
 
@@ -151,12 +141,17 @@ async def make_request_with_retry(method: str, url: str, **kwargs) -> Optional[h
     base_delay = 2.0
     for attempt in range(max_retries):
         try:
+            # Determine if this request needs a proxy
+            request_kwargs = kwargs.copy()
+            if "store.steampowered.com" in url:
+                request_kwargs['proxies'] = get_random_proxy_config()
+
             async with semaphore:
                 # Always use the global http_client. Proxying for store.steampowered.com is handled by its 'mounts' config.
                 if method.upper() == 'GET':
-                    response = await http_client.get(url, **kwargs)
+                    response = await http_client.get(url, **request_kwargs)
                 elif method.upper() == 'POST':
-                    response = await http_client.post(url, **kwargs)
+                    response = await http_client.post(url, **request_kwargs)
                 else:
                     logging.error(f"Unsupported HTTP method: {method}")
                     return None
