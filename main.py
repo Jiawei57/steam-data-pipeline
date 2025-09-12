@@ -38,13 +38,11 @@ if not DATABASE_URL:
 # A simple in-memory cache for the Twitch token
 twitch_token_cache: Dict[str, Any] = {"token": None, "expires_at": datetime.utcnow()}
 
-# A simple in-memory lock to prevent concurrent scraping tasks
-is_scraping: bool = False
-
 # --- Constants ---
 BATCH_SIZE = int(os.getenv("SCRAPER_BATCH_SIZE", 100))
 CONCURRENCY_LIMIT = int(os.getenv("SCRAPER_CONCURRENCY_LIMIT", 10))
 semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
+RETRIABLE_STATUSES = {403, 407, 429, 500, 502, 503, 504}
 
 # Use a single, reusable httpx client for performance
 headers = {
@@ -125,8 +123,7 @@ async def make_request_with_retry(method: str, url: str, use_proxy: bool = False
                 response.raise_for_status()
                 return response
         except (httpx.HTTPStatusError, httpx.RequestError, httpx.ProxyError, json.JSONDecodeError) as e:
-            retriable_statuses = {403, 407, 429, 500, 502, 503, 504}
-            is_retriable_status = isinstance(e, httpx.HTTPStatusError) and e.response.status_code in retriable_statuses
+            is_retriable_status = isinstance(e, httpx.HTTPStatusError) and e.response.status_code in RETRIABLE_STATUSES
             is_network_error = isinstance(e, (httpx.RequestError, json.JSONDecodeError))
 
             if is_retriable_status or is_network_error:
@@ -322,17 +319,31 @@ async def fetch_timeseries_data(app_id: str, game_name: str, price_info: Dict, t
 
 async def scrape_and_store_data():
     """The main pipeline function that orchestrates the entire scraping process, with graceful shutdown support."""
-    global is_scraping
-    if is_scraping:
-        logging.warning("Scraping process is already running. Skipping new trigger.")
-        return
-
-    is_scraping = True
-    logging.info("Starting data scraping process...")
     db = SessionLocal()
     try:
         # Ensure tables exist
         Base.metadata.create_all(bind=engine)
+
+        # --- Database-backed lock to prevent concurrent runs ---
+        # Check if a scrape is already in progress
+        is_running_record = db.query(ScrapingState).filter(ScrapingState.key == 'is_scraping_active').first()
+        if is_running_record and is_running_record.value == 'true':
+            # Check if the lock is stale (e.g., from a previous crash)
+            last_started_record = db.query(ScrapingState).filter(ScrapingState.key == 'last_started_utc').first()
+            if last_started_record:
+                last_started_time = datetime.fromisoformat(last_started_record.value)
+                if datetime.now(timezone.utc) - last_started_time > timedelta(hours=2):
+                    logging.warning("Found a stale lock older than 2 hours. Overriding and starting a new scrape.")
+                else:
+                    logging.warning("Scraping process is already running according to database lock. Skipping new trigger.")
+                    return
+
+        # Set the lock
+        db.merge(ScrapingState(key='is_scraping_active', value='true'))
+        db.merge(ScrapingState(key='last_started_utc', value=datetime.now(timezone.utc).isoformat()))
+        db.commit()
+        logging.info("Database lock acquired. Starting data scraping process...")
+        # --- End of lock logic ---
 
         # --- Smart Hybrid Strategy: Fetch a pool of valuable games ---
         top_selling_ids, most_played_ids = [], []
@@ -409,7 +420,9 @@ async def scrape_and_store_data():
         logging.error(f"An error occurred during the scraping pipeline: {e}", exc_info=True)
         db.rollback()
     finally:
-        is_scraping = False # Release the lock
+        # Release the lock in the database
+        db.merge(ScrapingState(key='is_scraping_active', value='false'))
+        db.commit()
         db.close()
         if shutdown_event.is_set():
             logging.info("Scraping process gracefully shut down.")
