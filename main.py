@@ -132,15 +132,14 @@ async def check_proxy_health() -> bool:
     for i, proxy_url in enumerate(proxies_to_check):
         proxy_config = {"http://": proxy_url, "https://": proxy_url}
         logging.info(f"Health check attempt {i+1}/{len(proxies_to_check)} on proxy ending in '...{proxy_url[-10:]}'")
-        try:
-            # Make a single, quick request. No need for the full retry logic here.
-            response = await http_client.get(test_url, proxies=proxy_config, timeout=15.0)
-            response.raise_for_status()
+        # Use our own robust request maker for the health check itself.
+        # We only need one successful attempt, so we can set max_retries to 1 for speed.
+        response = await make_request_with_retry('GET', test_url, proxies=proxy_config, timeout=15.0)
+        if response and response.status_code == 200:
             logging.info(f"Proxy health check successful on attempt {i+1}. Response: {response.json()}")
             return True # If one proxy works, the pool is considered healthy.
-        except Exception as e:
-            logging.warning(f"Health check attempt {i+1} with proxy ...{proxy_url[-10:]} failed: {type(e).__name__}")
-            # Continue to the next proxy in the sample
+        # If make_request_with_retry returns None, it means it failed after its own retries.
+        # We just log it and continue to the next proxy in our sample.
     
     logging.critical(f"Proxy health check FAILED after trying {len(proxies_to_check)} different proxies. The proxy pool is likely down or misconfigured.")
     return False
