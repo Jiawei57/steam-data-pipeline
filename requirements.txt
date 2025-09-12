@@ -2,9 +2,9 @@ fastapi
 uvicorn
 pandas
 beautifulsoup4
-httpx>=0.25.0 # Force a modern version that supports per-request proxies
+httpx>=0.25.0
 sqlalchemy
 psycopg2-binary
 python-dotenv
 asyncpg
-gunicorn # We add gunicorn back as it's a good production server for Render
+gunicorn

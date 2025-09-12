@@ -159,6 +159,8 @@ async def make_request_with_retry(method: str, url: str, **kwargs) -> Optional[h
                 elif method.upper() == 'POST':
                     response = await http_client.post(url, proxies=proxies_config, **kwargs)
                 else:
+                    # Put back the popped argument for logging consistency if method is unsupported
+                    if proxies_config: kwargs['proxies'] = proxies_config
                     logging.error(f"Unsupported HTTP method: {method}")
                     return None
                 response.raise_for_status()
