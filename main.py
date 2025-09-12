@@ -65,10 +65,23 @@ BRIGHTDATA_CA_PEM_PATH = '/app/brightdata_ca.pem'
 # This provides stability. The health check will verify the broader pool.
 proxy_url_for_mount = random.choice(proxy_list) if proxy_list else None
 
-# Mount the proxy transport only for requests to store.steampowered.com
-mounts = {"https://store.steampowered.com": httpx.AsyncHTTPTransport(proxy=proxy_url_for_mount, verify=BRIGHTDATA_CA_PEM_PATH)} if proxy_url_for_mount else {}
+# Default to system's trust store (True). Only use the custom CA if proxies are configured.
+client_verify_path = BRIGHTDATA_CA_PEM_PATH if proxy_list else True
 
-http_client = httpx.AsyncClient(timeout=30.0, follow_redirects=True, headers=headers, mounts=mounts, verify=BRIGHTDATA_CA_PEM_PATH)
+# Mount the proxy transport only for requests to store.steampowered.com
+mounts = (
+    {"https://store.steampowered.com": httpx.AsyncHTTPTransport(proxy=proxy_url_for_mount, verify=client_verify_path)}
+    if proxy_url_for_mount
+    else {}
+)
+
+http_client = httpx.AsyncClient(
+    timeout=30.0, 
+    follow_redirects=True, 
+    headers=headers, 
+    mounts=mounts, 
+    verify=client_verify_path
+)
 
 # --- Database Setup (SQLAlchemy ORM) ---
 
@@ -134,7 +147,7 @@ async def check_proxy_health() -> bool:
         try:
             logging.info(f"Health check attempt {i+1}/{len(proxies_to_check)} on proxy ending in '...{proxy_url[-10:]}'")
             # Create a temporary client configured to use ONLY this specific proxy
-            async with httpx.AsyncClient(proxies=proxy_url, timeout=15.0, verify=BRIGHTDATA_CA_PEM_PATH) as temp_client:
+            async with httpx.AsyncClient(proxies=proxy_url, timeout=15.0, verify=client_verify_path) as temp_client:
                 response = await temp_client.get(test_url)
                 response.raise_for_status()
                 logging.info(f"Proxy health check successful on attempt {i+1}. Response: {response.json()}")
@@ -489,11 +502,6 @@ def get_games(db: Session = Depends(get_db)):
         return {"message": "No game data found. Has the scraper been run yet?"}
     return games
 
-@app.on_event("shutdown")
-async def on_shutdown():
-    """Close the httpx client gracefully on application shutdown."""
-    await http_client.aclose()
-
 @app.get("/", summary="Health Check", tags=["Status"])
 async def root():
     """Provides a simple health check endpoint."""
@@ -508,5 +516,13 @@ async def trigger_scrape(background_tasks: BackgroundTasks):
     background_tasks.add_task(scrape_and_store_data)
     return {"message": "Data scraping process has been triggered in the background."}
 
-# --- Global Shutdown Event for Graceful Worker Shutdown ---
+# --- Global Shutdown Event & Handler ---
 shutdown_event = asyncio.Event()
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    """Set the shutdown event and close the httpx client gracefully."""
+    logging.info("Shutdown signal received. Preparing to close resources.")
+    shutdown_event.set() # Signal the scraper to stop
+    logging.info("Closing HTTP client...")
+    await http_client.aclose()
