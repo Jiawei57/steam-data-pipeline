@@ -3,6 +3,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional, Tuple
+from urllib.parse import urlencode
 import random
 
 import httpx
@@ -55,8 +56,7 @@ proxy_list = [url.strip() for url in PROXY_URLS.split(',')] if PROXY_URLS else [
 if proxy_list:
     logging.info(f"Loaded {len(proxy_list)} proxies for rotation.")
 
-# --- Database Setup (SQLAlchemy ORM) ---
-
+# Use a single, reusable httpx client for performance
 http_client = httpx.AsyncClient(timeout=30.0, follow_redirects=True, headers=headers)
 
 # --- Database Setup (SQLAlchemy ORM) ---
@@ -100,6 +100,13 @@ class ScrapingState(Base):
 
 # --- External API Services ---
 
+def get_random_proxy_config() -> Optional[Dict[str, str]]:
+    """Selects a random proxy from the list and returns it in httpx format."""
+    if not proxy_list:
+        return None
+    proxy_url = random.choice(proxy_list)
+    return {"http://": proxy_url, "https://": proxy_url}
+
 async def check_proxy_health() -> bool:
     """
     Performs a more robust health check on the proxy pool.
@@ -114,23 +121,21 @@ async def check_proxy_health() -> bool:
         return True
     
     logging.info("Performing robust proxy health check...")
-    test_url = "https://ip.decodo.com/json" # Use the official endpoint provided by the proxy service
-
-    # For health checks, we create temporary clients to test each proxy in isolation.
-    proxies_to_check = random.sample(proxy_list, min(3, len(proxy_list)))    
-
+    test_url = "https://api.ipify.org?format=json" # Use a neutral, provider-agnostic service for health checks
+    
+    # Create a shuffled sample of up to 3 proxies to check.
+    proxies_to_check = random.sample(proxy_list, min(3, len(proxy_list)))
+    
     for i, proxy_url in enumerate(proxies_to_check):
-        try:
-            logging.info(f"Health check attempt {i+1}/{len(proxies_to_check)} on proxy ending in '...{proxy_url[-10:]}'")
-            # Create a temporary client configured to use ONLY this specific proxy
-            async with httpx.AsyncClient(proxies=proxy_url, timeout=15.0) as temp_client:
-                response = await temp_client.get(test_url)
-                response.raise_for_status()
-                logging.info(f"Proxy health check successful on attempt {i+1}. Response: {response.json()}")
-                return True # If one proxy works, the pool is considered healthy.
-        except Exception as e:
-            logging.warning(f"Health check attempt {i+1} with proxy ...{proxy_url[-10:]} failed: {type(e).__name__} - {e}")
-            # Continue to the next proxy in the sample
+        proxy_config = {"http://": proxy_url, "https://": proxy_url}
+        logging.info(f"Health check attempt {i+1}/{len(proxies_to_check)} on proxy ending in '...{proxy_url[-10:]}'")
+        # Use our own robust request maker for the health check itself.
+        response = await make_request_with_retry('GET', test_url, proxies=proxy_config, timeout=15.0)
+        if response and response.status_code == 200:
+            logging.info(f"Proxy health check successful on attempt {i+1}. Response: {response.json()}")
+            return True # If one proxy works, the pool is considered healthy.
+        # If make_request_with_retry returns None, it means it failed after its own retries.
+        # We just log it and continue to the next proxy in our sample.
     
     logging.critical(f"Proxy health check FAILED after trying {len(proxies_to_check)} different proxies. The proxy pool is likely down or misconfigured.")
     return False
@@ -139,18 +144,23 @@ async def make_request_with_retry(method: str, url: str, **kwargs) -> Optional[h
     """Makes an HTTP request with retry logic, using a semaphore to limit concurrency."""
     max_retries = 3
     base_delay = 2.0
+
     for attempt in range(max_retries):
         try:
-            # Determine if this request needs a proxy
             request_kwargs = kwargs.copy()
-            if "store.steampowered.com" in url:
+            
+            # Prioritize explicitly passed proxies (for health checks).
+            # If not provided, then apply rotation for Steam store URLs.
+            if 'proxies' not in request_kwargs and "store.steampowered.com" in url:
                 request_kwargs['proxies'] = get_random_proxy_config()
 
             async with semaphore:
-                # Always use the global http_client. Proxying for store.steampowered.com is handled by its 'mounts' config.
                 if method.upper() == 'GET':
+                    # Use the original 'url' and the potentially modified kwargs
                     response = await http_client.get(url, **request_kwargs)
                 elif method.upper() == 'POST':
+                    # POST requests in this app (like Twitch auth) don't use proxies,
+                    # so this branch is safe.
                     response = await http_client.post(url, **request_kwargs)
                 else:
                     logging.error(f"Unsupported HTTP method: {method}")
@@ -191,7 +201,7 @@ async def get_twitch_token() -> Optional[str]:
         "grant_type": "client_credentials",
     }
     # Let the retry decorator handle exceptions
-    # Use the new http_post wrapper to ensure retries on failure. No proxy is needed for Twitch.
+    # This request does not need a proxy.
     response = await make_request_with_retry('POST', url, params=params)
     if not response:
         raise Exception("http_post for Twitch token returned None after retries.")
@@ -214,7 +224,7 @@ async def fetch_paginated_list(base_url: str, limit: int, selector: str, id_extr
         # Steam search pages use a 'page' query parameter.
         url = f"{base_url}&page={page}"
         logging.info(f"Fetching page {page} from {url}")
-        # This request goes to store.steampowered.com, so we use the proxy.
+        # This request goes to store.steampowered.com, so we use a proxy.
         response = await make_request_with_retry('GET', url)
         if not response:
             logging.error(f"Failed to fetch page {page} after all retries. Aborting paginated fetch.")
@@ -266,7 +276,7 @@ async def fetch_most_played_ids() -> List[str]:
     """Fetches Most Played game IDs from Steam charts, with retry logic."""
     logging.info("Fetching Most Played list...")
     url = "https://store.steampowered.com/charts/mostplayed"
-    # This request goes to store.steampowered.com, so we use the proxy.
+    # This request goes to store.steampowered.com, so we use a proxy.
     response = await make_request_with_retry('GET', url)
     if not response:
         raise Exception("Failed to fetch most played page after multiple retries.")
@@ -280,7 +290,7 @@ async def fetch_game_details(app_id: str) -> Optional[Dict[str, Any]]: # Keep re
     """Fetches detailed metadata for a single game from the Steam API."""
     url = f"https://store.steampowered.com/api/appdetails?appids={app_id}" # Internal store API, needs proxy.
     try:
-        # This request goes to store.steampowered.com, so we use the proxy.
+        # This request goes to store.steampowered.com, so we use a proxy.
         response = await make_request_with_retry('GET', url)
         if not response:
             raise Exception("http_get returned None")

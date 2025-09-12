@@ -47,7 +47,7 @@
     STEAM_API_KEY=YOUR_STEAM_API_KEY
     TWITCH_CLIENT_ID=YOUR_TWITCH_CLIENT_ID
     TWITCH_CLIENT_SECRET=YOUR_TWITCH_CLIENT_SECRET
-    PROXY_URLS=http://user:pass@host1:port1,http://user:pass@host2:port2
+    PROXY_URLS=http://user:pass@host1:port1,http://user:pass@host2:port2 # 住宅代理 URL，以逗號分隔
     ```
 
 5.  **在本地運行應用程式**:

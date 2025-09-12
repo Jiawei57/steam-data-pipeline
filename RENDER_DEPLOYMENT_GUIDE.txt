@@ -58,6 +58,9 @@
         *   Key: `STEAM_API_KEY`, Value: `貼上您的 Steam API 金鑰`
         *   Key: `TWITCH_CLIENT_ID`, Value: `貼上您的 Twitch Client ID`
         *   Key: `TWITCH_CLIENT_SECRET`, Value: `貼上您的 Twitch Client Secret`
+    *   **代理設定 (極其重要)**:
+        *   Key: `PROXY_URLS`, Value: `貼上您從代理供應商獲取的所有代理 URL，並用逗號隔開`
+        *   *範例: `http://user:pass@host1:port1,http://user:pass@host2:port2`*
     *   **(可選) 效能參數**:
         *   Key: `SCRAPER_BATCH_SIZE`, Value: `100`
         *   Key: `SCRAPER_CONCURRENCY_LIMIT`, Value: `10`
