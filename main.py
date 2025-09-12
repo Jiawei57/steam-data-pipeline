@@ -27,7 +27,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 STEAM_API_KEY = os.getenv("STEAM_API_KEY")
 TWITCH_CLIENT_ID = os.getenv("TWITCH_CLIENT_ID")
 TWITCH_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET")
-PROXY_URLS = os.getenv("PROXY_URLS") # Comma-separated list of proxy URLs
+SCRAPERAPI_KEY = os.getenv("SCRAPERAPI_KEY")
 
 if not DATABASE_URL:
     logging.error("DATABASE_URL environment variable not set. Application cannot start.")
@@ -51,36 +51,10 @@ headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
 }
 
-# Parse the comma-separated proxy URLs into a list for rotation
-proxy_list = [url.strip() for url in PROXY_URLS.split(',')] if PROXY_URLS else []
-if proxy_list:
-    logging.info(f"Loaded {len(proxy_list)} proxies for rotation.")
-
-# Define the path to the CA certificate bundle within the Docker container.
-BRIGHTDATA_CA_PEM_PATH = '/app/brightdata_ca.pem'
-
-# --- Client with Advanced Proxy Mounting ---
-
-# Select a single proxy URL at startup for the main client's transport.
-# This provides stability. The health check will verify the broader pool.
-proxy_url_for_mount = random.choice(proxy_list) if proxy_list else None
-
-# Default to system's trust store (True). Only use the custom CA if proxies are configured.
-client_verify_path = BRIGHTDATA_CA_PEM_PATH if proxy_list else True
-
-# Mount the proxy transport only for requests to store.steampowered.com
-mounts = (
-    {"https://store.steampowered.com": httpx.AsyncHTTPTransport(proxy=proxy_url_for_mount, verify=client_verify_path)}
-    if proxy_url_for_mount
-    else {}
-)
-
 http_client = httpx.AsyncClient(
     timeout=30.0, 
     follow_redirects=True, 
-    headers=headers, 
-    mounts=mounts, 
-    verify=client_verify_path
+    headers=headers
 )
 
 # --- Database Setup (SQLAlchemy ORM) ---
@@ -124,54 +98,27 @@ class ScrapingState(Base):
 
 # --- External API Services ---
 
-async def check_proxy_health() -> bool:
-    """
-    Performs a more robust health check on the proxy pool.
-    It tries up to 3 different random proxies before declaring the pool unusable.
-    """
-    if not proxy_list:
-        # If the PROXY_URLS env var was set but the list is empty, it's a config error.
-        if PROXY_URLS:
-            logging.critical("PROXY_URLS environment variable is set, but no valid proxies could be parsed. Please check the format (comma-separated).")
-            return False
-        logging.info("No proxies configured. Skipping health check.")
-        return True
-    
-    logging.info("Performing robust proxy health check...")
-    test_url = "https://api.ipify.org?format=json" # Use a neutral, provider-agnostic service for health checks
-
-    # For health checks, we create temporary clients to test each proxy in isolation.
-    proxies_to_check = random.sample(proxy_list, min(3, len(proxy_list)))
-    
-    for i, proxy_url in enumerate(proxies_to_check):
-        try:
-            logging.info(f"Health check attempt {i+1}/{len(proxies_to_check)} on proxy ending in '...{proxy_url[-10:]}'")
-            # Create a temporary client configured to use ONLY this specific proxy
-            async with httpx.AsyncClient(proxies=proxy_url, timeout=15.0, verify=client_verify_path) as temp_client:
-                response = await temp_client.get(test_url)
-                response.raise_for_status()
-                logging.info(f"Proxy health check successful on attempt {i+1}. Response: {response.json()}")
-                return True # If one proxy works, the pool is considered healthy.
-        except Exception as e:
-            logging.warning(f"Health check attempt {i+1} with proxy ...{proxy_url[-10:]} failed: {type(e).__name__} - {e}")
-            # Continue to the next proxy in the sample
-    
-    logging.critical(f"Proxy health check FAILED after trying {len(proxies_to_check)} different proxies. The proxy pool is likely down or misconfigured.")
-    return False
-
-async def make_request_with_retry(method: str, url: str, **kwargs) -> Optional[httpx.Response]:
+async def make_request_with_retry(method: str, url: str, use_proxy: bool = False, **kwargs) -> Optional[httpx.Response]:
     """Makes an HTTP request with retry logic, using a semaphore to limit concurrency."""
     max_retries = 3
     base_delay = 2.0
 
+    request_url = url
+    # If proxy is needed and the key is available, construct the ScraperAPI URL
+    if use_proxy and SCRAPERAPI_KEY:
+        payload = {'api_key': SCRAPERAPI_KEY, 'url': url}
+        request_url = 'http://api.scraperapi.com/?' + urlencode(payload)
+        logging.debug(f"Using proxy for URL: {url}")
+    elif use_proxy and not SCRAPERAPI_KEY:
+        logging.error(f"Attempted to use proxy for {url}, but SCRAPERAPI_KEY is not set. Making a direct request.")
+
     for attempt in range(max_retries):
         try:
             async with semaphore:
-                # Always use the global http_client. Proxying for store.steampowered.com is handled by its 'mounts' config.
                 if method.upper() == 'GET':
-                    response = await http_client.get(url, **kwargs)
+                    response = await http_client.get(request_url, **kwargs)
                 elif method.upper() == 'POST':
-                    response = await http_client.post(url, **kwargs)
+                    response = await http_client.post(request_url, **kwargs)
                 else:
                     logging.error(f"Unsupported HTTP method: {method}")
                     return None
@@ -234,8 +181,8 @@ async def fetch_paginated_list(base_url: str, limit: int, selector: str, id_extr
         # Steam search pages use a 'page' query parameter.
         url = f"{base_url}&page={page}"
         logging.info(f"Fetching page {page} from {url}")
-        # This request goes to store.steampowered.com, so we use a proxy.
-        response = await make_request_with_retry('GET', url)
+        # This request goes to store.steampowered.com, so we use a proxy.        
+        response = await make_request_with_retry('GET', url, use_proxy=True)
         if not response:
             logging.error(f"Failed to fetch page {page} after all retries. Aborting paginated fetch.")
             break # Stop fetching more pages if one fails completely
@@ -286,8 +233,8 @@ async def fetch_most_played_ids() -> List[str]:
     """Fetches Most Played game IDs from Steam charts, with retry logic."""
     logging.info("Fetching Most Played list...")
     url = "https://store.steampowered.com/charts/mostplayed"
-    # This request goes to store.steampowered.com, so we use a proxy.
-    response = await make_request_with_retry('GET', url)
+    # This request goes to store.steampowered.com, so we use a proxy.    
+    response = await make_request_with_retry('GET', url, use_proxy=True)
     if not response:
         raise Exception("Failed to fetch most played page after multiple retries.")
     soup = BeautifulSoup(response.text, "html.parser")
@@ -300,8 +247,8 @@ async def fetch_game_details(app_id: str) -> Optional[Dict[str, Any]]: # Keep re
     """Fetches detailed metadata for a single game from the Steam API."""
     url = f"https://store.steampowered.com/api/appdetails?appids={app_id}" # Internal store API, needs proxy.
     try:
-        # This request goes to store.steampowered.com, so we use a proxy.
-        response = await make_request_with_retry('GET', url)
+        # This request goes to store.steampowered.com, so we use a proxy.        
+        response = await make_request_with_retry('GET', url, use_proxy=True)
         if not response:
             raise Exception("http_get returned None")
         data = response.json().get(app_id, {})
@@ -349,9 +296,9 @@ async def fetch_timeseries_data(app_id: str, game_name: str, price_info: Dict, t
     if twitch_token and game_name:
         try:
             normalized_name = normalize_game_name(game_name)
-            stream_url = f"https://api.twitch.tv/helix/streams?game_name={normalized_name}"
+            stream_url = "https://api.twitch.tv/helix/streams"
             headers = {"Client-ID": TWITCH_CLIENT_ID, "Authorization": f"Bearer {twitch_token}"}
-            stream_response = await make_request_with_retry('GET', stream_url, headers=headers)
+            stream_response = await make_request_with_retry('GET', stream_url, headers=headers, params={"game_name": normalized_name})
             if not stream_response:
                 raise Exception("http_get for streamer count returned None")
             streamer_count = len(stream_response.json().get("data", []))
@@ -383,11 +330,6 @@ async def scrape_and_store_data():
     is_scraping = True
     logging.info("Starting data scraping process...")
     db = SessionLocal()
-
-    # Perform a proxy health check before starting any heavy work
-    if not await check_proxy_health():
-        logging.error("Aborting scrape due to proxy health check failure.")
-        return
     try:
         # Ensure tables exist
         Base.metadata.create_all(bind=engine)
