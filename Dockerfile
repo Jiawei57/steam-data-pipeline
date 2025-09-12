@@ -12,15 +12,14 @@ RUN useradd --system --uid 1000 --gid 0 -m -s /bin/bash appuser
 # Install Python dependencies.
 # Copying requirements first and using --chown improves layer caching and security.
 COPY --chown=appuser:0 requirements.txt .
-
-# Switch to the non-root user BEFORE installing packages to avoid permission warnings.
-USER appuser
-
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code.
 # Copy all Python source files. config.ini is for local dev and is not copied.
 COPY --chown=appuser:0 *.py ./
+
+# Now, switch to the non-root user to run the application.
+USER appuser
 
 # Run the runner script on container startup.
 # This starts the long-running scraping task directly.
