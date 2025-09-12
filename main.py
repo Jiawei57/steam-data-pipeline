@@ -334,10 +334,10 @@ async def scrape_and_store_data():
         Base.metadata.create_all(bind=engine)
 
         # --- Smart Hybrid Strategy: Fetch a pool of valuable games ---
+        top_selling_ids, most_played_ids = [], []
         try:
             logging.info("Fetching candidate games from Top Sellers and Most Played lists...")
             
-            # Use the new robust fetching functions with retries
             top_selling_ids_task = fetch_top_selling_ids(limit=500)
             most_played_ids_task = fetch_most_played_ids()
 
@@ -345,7 +345,7 @@ async def scrape_and_store_data():
             top_selling_ids = results[0] if not isinstance(results[0], Exception) else []
             most_played_ids = results[1] if not isinstance(results[1], Exception) else []
         except Exception as e:
-            logging.critical(f"Could not fetch initial game lists even after retries: {e}")
+            logging.critical(f"An unexpected error occurred while gathering initial game lists: {e}", exc_info=True)
 
         # Combine and deduplicate the lists to create a high-value pool of games
         candidate_app_ids = sorted(list(set(top_selling_ids + most_played_ids)))

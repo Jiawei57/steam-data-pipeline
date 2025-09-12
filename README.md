@@ -1,78 +1,87 @@
-# Steam 遊戲趨勢分析管道 (Render 版本)
+# Steam 數據管道
 
-這是一個部署在 **Render** 上的專業級數據管道，旨在透過**智慧型混合策略**，從 Steam 平台高效地擷取一個由**暢銷榜**與**熱門榜**遊戲組成的「黃金數據池」，並將其結構化地存儲在 **PostgreSQL** 資料庫中，以供後續的商業智慧 (BI) 分析與視覺化應用。
+一個穩健、自動化的數據管道，用於從 Steam 抓取遊戲數據並將其儲存到 PostgreSQL 資料庫中。此專案包含一個用於抓取數據的背景工人 (Background Worker) 和一個用於基本互動的 FastAPI 介面。
 
-此專案採用了現代化的 PaaS (平台即服務) 架構，並針對數據的**價值密度**與**技術可行性**進行了深度優化。
+## 功能特性
 
-> **策略核心**: 我們不追求抓取所有遊戲的「廣度」，而是專注於一個由 Top 500 暢銷遊戲和 Top 500 最多玩家數遊戲組成的、約 600-800 款遊戲的高價值列表。這使得單次任務可在 30 分鐘內完成，非常適合在 Render 的免費方案上穩定運行。
+- **混合抓取策略**: 從 Steam 的「暢銷商品」和「最多人玩」排行榜中獲取高價值的遊戲池。
+- **高韌性與穩健性**: 針對網路和 API 錯誤，實現了帶有指數退避策略的自動重試機制。
+- **代理輪換**: 利用住宅代理池來避免 IP 封鎖，確保高成功率。
+- **選擇性代理**: 智能地僅對敏感網域（如 `store.steampowered.com`）的請求應用代理，同時對公開 API（如 `api.steampowered.com` 和 Twitch）使用直接連線。
+- **並發處理**: 使用 `asyncio` 和信號量 (Semaphore) 以並發批次的方式處理數據，最大化效率。
+- **優雅關閉**: 背景工人可以被優雅地關閉，確保正在進行中的任務在退出前能順利完成。
+- **高效資料庫操作**: 使用 SQLAlchemy ORM，結合批次插入和 "upsert" (on-conflict-do-update) 邏輯，實現高效能的數據儲存。
+- **數據整合**: 使用 Twitch API 的直播主數量來豐富 Steam 數據。
 
-## 專案亮點 (Key Features)
+## 系統架構
 
-*   **高效能非同步處理 (High-Performance Async IO)**：採用 `FastAPI` 搭配 `httpx` 與 `asyncio`，能夠並行處理對多個 Steam API 的大量請求，極大地壓縮了數據獲取時間。
-*   **智慧型混合數據池 (Smart Hybrid Data Pool)**：同時爬取「暢銷榜」與「熱門榜」，兼顧了商業成功與玩家參與度兩個維度，數據價值密度極高。
-*   **穩健的批次處理與速率控制 (Robust Batching & Rate Limiting)**：以批次方式處理數百筆資料，並透過 `Semaphore` 精確控制併發請求數，有效控制記憶體使用並規避 API 速率限制。
-*   **智慧重試機制 (Intelligent Retries)**：內建指數退避重試邏輯，能自動處理暫時性的網路錯誤或伺服器過載問題。
-*   **增量更新 (Upsert Logic)**：利用 PostgreSQL 的 `ON CONFLICT DO UPDATE` 功能，高效地插入新遊戲資料或更新現有遊戲資料，避免重複工作。
-*   **安全的密鑰管理 (Secure Secret Management)**：透過 Render 平台的環境變數管理 API 金鑰，符合雲端安全最佳實踐。
+- **資料庫**: 一個託管在 Render 上的 PostgreSQL 資料庫，用於儲存所有抓取到的數據（`games_metadata` 和 `games_timeseries` 表）。
+- **背景工人 (Background Worker)**: 一個作為 Render 背景工人運行的 Python 應用程式。它透過 `runner.py` 執行主要的抓取邏輯 (`scrape_and_store_data`)。
+- **API (可選)**: 程式碼中包含一個輕量級的 FastAPI 應用，提供健康檢查和手動觸發端點。在背景工人的設定中，此 API 不會對外公開。
 
-## 技術架構 (Tech Stack)
+## 本地開發環境設定
 
-*   **雲端平台**: Render
-*   **執行環境**: Background Worker on Python 3.11 (Dockerized)
-*   **資料儲存**: PostgreSQL
-*   **核心技術**:
-    *   **資料庫 ORM**: SQLAlchemy
-    *   **Web Scraping**: BeautifulSoup4
-    *   **API 請求**: `httpx` (非同步)
-    *   **資料處理**: Pandas
-*   **視覺化工具 (建議)**: Looker Studio
+1.  **克隆儲存庫**:
+    ```bash
+    git clone <您的儲存庫 URL>
+    cd <專案資料夾名稱>
+    ```
 
-## 部署指南 (Deployment Guide)
+2.  **建立虛擬環境**:
+    ```bash
+    python -m venv venv
+    source venv/bin/activate  # 在 Windows 上，使用 `venv\Scripts\activate`
+    ```
 
-本專案採用手動部署流程，以確保設定完全符合目前的專業架構。
-**重要提示：請忽略專案中的 `render.yaml` 檔案**，因為它對應的是舊的架構，已不再適用。
+3.  **安裝依賴套件**:
+    您的專案中應已包含 `requirements.txt` 檔案。執行以下指令進行安裝：
+    ```bash
+    pip install -r requirements.txt
+    ```
 
-### 前置準備
-1.  一個 GitHub 帳號。
-2.  一個 Render 帳號 (可使用 GitHub 帳號登入)。
-3.  將此專案 Fork 到您自己的 GitHub 帳號下，或是建立一個新的 repository 並將程式碼推送上去。
+4.  **設定環境變數**:
+    在專案根目錄下建立一個 `.env` 檔案，並填入您的憑證。您可以使用本地的 PostgreSQL 實例，或使用您在 Render DB 上的「外部連線字串」。
+    ```
+    # .env 檔案內容範例
+    DATABASE_URL=postgresql://user:password@host:port/database
+    STEAM_API_KEY=YOUR_STEAM_API_KEY
+    TWITCH_CLIENT_ID=YOUR_TWITCH_CLIENT_ID
+    TWITCH_CLIENT_SECRET=YOUR_TWITCH_CLIENT_SECRET
+    PROXY_URLS=http://user:pass@host1:port1,http://user:pass@host2:port2
+    ```
 
-### 步驟 1：建立 PostgreSQL 資料庫
-1.  在 Render 儀表板，點擊 **New +** > **PostgreSQL**。
-2.  設定一個名稱 (例如 `steam-db`) 和資料庫名稱 (例如 `steam_data`)。
-3.  選擇 `Free` 方案並點擊 **Create Database**。
-4.  等待資料庫狀態變為 **`Available`** (可用)。
+5.  **在本地運行應用程式**:
+    您可以運行 FastAPI 伺服器來測試 API 端點：
+    ```bash
+    uvicorn main:app --reload
+    ```
+    或者，直接運行爬蟲腳本，模擬它在 Render 上的運行方式：
+    ```bash
+    python runner.py
+    ```
 
-### 步驟 2：建立 Background Worker
-1.  在 Render 儀表板，點擊 **New +** > **Background Worker**。
-2.  連接您存放此專案的 GitHub repository。
-3.  設定一個名稱 (例如 `steam-scraper-worker`)。
-4.  **Start Command** 填入: `python runner.py`
-5.  選擇 `Free` 方案並點擊 **Create Background Worker**。
+## 在 Render 上部署
 
-### 步驟 3：設定環境變數 (最關鍵的一步)
-1.  部署開始後 (第一次可能會失敗)，前往 `steam-scraper-worker` 服務的 **Environment** 頁籤。
-2.  手動新增以下環境變數並儲存：
-    *   `DATABASE_URL`: 點擊輸入框，從下拉選單中選擇您剛剛建立的 `steam-db` 資料庫的 `Internal Connection String`。
-    *   `STEAM_API_KEY`: 您的 Steam API 金鑰。
-    *   `TWITCH_CLIENT_ID`: (可選) 您的 Twitch Client ID。
-    *   `TWITCH_CLIENT_SECRET`: (可選) 您的 Twitch Client Secret。
-3.  儲存環境變數後，Render 會自動重新部署您的服務。
+此專案被設計為在 Render 上作為 **背景工人 (Background Worker)** 部署。
 
-部署完成！您的背景工人將在啟動後自動開始執行數據抓取任務。
+1.  **建立 PostgreSQL 資料庫**:
+    - 在 Render 中，建立一個新的 **PostgreSQL** 服務。
+    - 使用 `Free` 方案並選擇一個區域（例如 `Oregon (US West)`）。
 
-### 如何用 Git 更新部署
-每當您將新的程式碼改動推送到 GitHub repository 的主分支時，Render 都會**自動**抓取最新的程式碼並重新部署您的背景工人服務，實現真正的持續部署 (Continuous Deployment)。
+2.  **建立背景工人**:
+    - 建立一個新的 **Background Worker** 並將其連接到您的 GitHub 儲存庫。
+    - **啟動指令 (Start Command)**: `python runner.py`
+    - 確保區域與您的資料庫相同。
 
-## 本地開發 (Local Development)
+3.  **設定環境變數**:
+    - 在背景工人的 **Environment** 頁籤中，透過連結到您的 PostgreSQL 服務的內部連線字串來新增 `DATABASE_URL`。
+    - 新增您的 `STEAM_API_KEY`, `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET`, 和 `PROXY_URLS` (以逗號分隔)。
 
-1.  在本地安裝一個 PostgreSQL 資料庫 (推薦使用 Docker)。
-2.  建立一個 `.env` 檔案，並填入您的本地資料庫 URL 和 API 金鑰 (參考 `.env.example`)。
-3.  安裝 Python 依賴：`pip install -r requirements.txt`。
-4.  若要執行爬蟲，請運行：`python runner.py`。
+4.  **自動部署**:
+    每當您 `git push` 到 `main` 分支時，Render 都會自動部署新的變更。
 
-## 連接視覺化工具
-1.  在 Render 儀表板中，找到您的 PostgreSQL 資料庫服務。
-2.  在 **Info** 頁籤下，找到 **External Connection String** (外部連線字串)。
-3.  將此連線字串的資訊（主機、使用者、密碼、資料庫名稱）填入 Looker Studio 的 PostgreSQL 連接器中。
-4.  您現在可以開始基於 `games_metadata` 和 `games_timeseries` 這兩個資料表來建立您的儀表板了。
+若需更詳細的逐步指南，請參考 `RENDER_DEPLOYMENT_GUIDE.txt` 檔案。
+
+## 如何驗證數據
+
+使用像 DBeaver 或 pgAdmin 這樣的客戶端工具連接到您的 PostgreSQL 資料庫，並執行 SQL 查詢來檢查 `games_metadata` 和 `games_timeseries` 表。請參考 `RENDER_DEPLOYMENT_GUIDE.txt` 中的「驗證」部分以獲取查詢範例。
