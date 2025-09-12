@@ -110,9 +110,10 @@ def retry_on_error(max_retries: int = 3, base_delay: float = 1.0):
                     # Use a semaphore to limit concurrency
                     async with semaphore:
                         return await func(*args, **kwargs)
-                except (httpx.HTTPStatusError, httpx.RequestError, json.JSONDecodeError) as e:
-                    # Retry on server errors (5xx), rate limiting (429), or temporary blocks (403)
-                    if isinstance(e, httpx.HTTPStatusError) and (e.response.status_code >= 500 or e.response.status_code == 429 or e.response.status_code == 403):
+                except (httpx.HTTPStatusError, httpx.RequestError, httpx.ProxyError, json.JSONDecodeError) as e:
+                    # Retry on server errors (5xx), rate limiting (429), temp blocks (403), or proxy auth issues (407)
+                    retriable_statuses = {403, 407, 429}
+                    if isinstance(e, httpx.HTTPStatusError) and (e.response.status_code >= 500 or e.response.status_code in retriable_statuses):
                         if attempt < max_retries - 1:
                             delay = base_delay * (2 ** attempt)
                             logging.warning(f"Request failed with {e.response.status_code}. Retrying in {delay:.2f} seconds... (Attempt {attempt + 1}/{max_retries})")
@@ -120,7 +121,7 @@ def retry_on_error(max_retries: int = 3, base_delay: float = 1.0):
                         else:
                             logging.error(f"Request failed after {max_retries} attempts. Giving up. Error: {e}")
                             return None
-                    # Retry on network errors or JSON decoding errors
+                    # Retry on network errors (including ProxyError) or JSON decoding errors
                     elif isinstance(e, (httpx.RequestError, json.JSONDecodeError)):
                         if attempt < max_retries - 1:
                             delay = base_delay * (2 ** attempt)
@@ -130,7 +131,7 @@ def retry_on_error(max_retries: int = 3, base_delay: float = 1.0):
                             logging.error(f"Request failed after {max_retries} attempts. Giving up. Error: {e}")
                             return None
                     else:
-                        # For other client errors (like 403, 404), don't retry, just log and fail.
+                        # For other client errors (like 404), don't retry, just log and fail.
                         logging.error(f"Unrecoverable client error. Not retrying. Error: {e}")
                         return None
             return None
