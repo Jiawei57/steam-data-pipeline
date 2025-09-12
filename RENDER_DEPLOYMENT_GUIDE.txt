@@ -36,11 +36,12 @@
 
 1.  回到 Render 主儀表板，點擊 **New +** > **Background Worker**。
 2.  連接您的 GitHub 帳號，並選擇您存放此專案的 repository。
+    *(注意：這一步至關重要！請務必從「New +」選單中選擇 `Background Worker`，因為服務類型在建立後無法更改。)*
 3.  在設定頁面中，填入以下資訊：
     *   **Name**: `steam-scraper-worker` (建議使用此名稱)
     *   **Region**: `Oregon (US West)` (務必選擇與您的資料庫相同的區域)
     *   **Branch**: `main`
-    *   **Start Command**: `python runner.py` (這是最關鍵的一步)
+    *   **Start Command**: (此欄位應不存在，因為啟動指令已在 Dockerfile 中由 `CMD` 指令定義。如果看到 `Docker Command (optional)`，請將其留空。)
     *   **Instance Type**: `Free`
 4.  點擊頁面底部的 **Create Background Worker**。
     *(注意：第一次部署很可能會失敗，這是完全正常的，因為還未設定環境變數。)*
@@ -53,14 +54,13 @@
 2.  點擊左側的 **Environment** 頁籤。
 3.  在 "Environment Variables" 區塊，點擊 **Add Environment Variable**，逐一新增所有必要的變數：
     *   **資料庫連線**:
-        *   Key: `DATABASE_URL`, Value: (點擊輸入框，從下拉選單選擇 `steam-db (PostgreSQL)` > `Internal Connection String`)
+        *   Key: `DATABASE_URL`, Value: (點擊輸入框，從下拉選單選擇 `steam-db (PostgreSQL)` > `Internal Database URL`)
     *   **API 金鑰**:
         *   Key: `STEAM_API_KEY`, Value: `貼上您的 Steam API 金鑰`
         *   Key: `TWITCH_CLIENT_ID`, Value: `貼上您的 Twitch Client ID`
         *   Key: `TWITCH_CLIENT_SECRET`, Value: `貼上您的 Twitch Client Secret`
-    *   **代理設定 (極其重要)**:
-        *   Key: `PROXY_URLS`, Value: `貼上您從代理供應商獲取的所有代理 URL，並用逗號隔開`
-        *   *範例: `http://user:pass@host1:port1,http://user:pass@host2:port2`*
+    *   **代理服務金鑰 (極其重要)**:
+        *   Key: `SCRAPERAPI_KEY`, Value: `貼上您從 ScraperAPI 儀表板獲取的 API 金鑰`
     *   **(可選) 效能參數**:
         *   Key: `SCRAPER_BATCH_SIZE`, Value: `100`
         *   Key: `SCRAPER_CONCURRENCY_LIMIT`, Value: `10`
