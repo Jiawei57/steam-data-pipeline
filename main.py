@@ -116,8 +116,12 @@ async def check_proxy_health() -> bool:
     It tries up to 3 different random proxies before declaring the pool unusable.
     """
     if not proxy_list:
+        # If the PROXY_URLS env var was set but the list is empty, it's a config error.
+        if PROXY_URLS:
+            logging.critical("PROXY_URLS environment variable is set, but no valid proxies could be parsed. Please check the format (comma-separated).")
+            return False
         logging.info("No proxies configured. Skipping health check.")
-        return True # No proxies to check, so health is considered ok.
+        return True
     
     logging.info("Performing robust proxy health check...")
     test_url = "https://ip.decodo.com/json" # Use the official endpoint provided by the proxy service
