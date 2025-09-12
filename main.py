@@ -150,12 +150,17 @@ async def make_request_with_retry(method: str, url: str, **kwargs) -> Optional[h
     base_delay = 2.0
     for attempt in range(max_retries):
         try:
+            # Explicitly separate the 'proxies' argument from other kwargs.
+            proxies_config = kwargs.pop('proxies', None)
+
             async with semaphore:
                 if method.upper() == 'GET':
-                    response = await http_client.get(url, **kwargs)
+                    response = await http_client.get(url, proxies=proxies_config, **kwargs)
                 elif method.upper() == 'POST':
-                    response = await http_client.post(url, **kwargs)
+                    response = await http_client.post(url, proxies=proxies_config, **kwargs)
                 else:
+                    # Put back the popped argument for logging consistency if method is unsupported
+                    if proxies_config: kwargs['proxies'] = proxies_config
                     logging.error(f"Unsupported HTTP method: {method}")
                     return None
                 response.raise_for_status()
@@ -165,6 +170,8 @@ async def make_request_with_retry(method: str, url: str, **kwargs) -> Optional[h
             is_retriable_status = isinstance(e, httpx.HTTPStatusError) and e.response.status_code in retriable_statuses
             is_network_error = isinstance(e, (httpx.RequestError, json.JSONDecodeError))
 
+            # Put back the popped argument for logging consistency on failure
+            if proxies_config: kwargs['proxies'] = proxies_config
             if is_retriable_status or is_network_error:
                 if attempt < max_retries - 1:
                     delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
