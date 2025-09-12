@@ -110,52 +110,57 @@ class ScrapingState(Base):
 
 # --- External API Services ---
 
-def retry_on_error(max_retries: int = 3, base_delay: float = 1.0):
-    """A decorator to retry a function on HTTP errors with exponential backoff."""
-    def decorator(func):
-        @wraps(func)
-        async def wrapper(*args, **kwargs):
-            for attempt in range(max_retries):
-                try:
-                    # Use a semaphore to limit concurrency
-                    async with semaphore:
-                        return await func(*args, **kwargs)
-                except (httpx.HTTPStatusError, httpx.RequestError, httpx.ProxyError, json.JSONDecodeError) as e:
-                    # Retry on server errors (5xx), rate limiting (429), temp blocks (403), or proxy auth issues (407)
-                    retriable_statuses = {403, 407, 429}
-                    if isinstance(e, httpx.HTTPStatusError) and (e.response.status_code >= 500 or e.response.status_code in retriable_statuses):
-                        if attempt < max_retries - 1:
-                            delay = base_delay * (2 ** attempt)
-                            logging.warning(f"Request failed with HTTP status {e.response.status_code}. Retrying in {delay:.2f} seconds... (Attempt {attempt + 1}/{max_retries})")
-                            await asyncio.sleep(delay)
-                        else:
-                            logging.error(f"Request failed after {max_retries} attempts. Giving up. Error: {e}")
-                            return None
-                    # Retry on network errors (including ProxyError) or JSON decoding errors
-                    elif isinstance(e, (httpx.RequestError, json.JSONDecodeError)):
-                        if attempt < max_retries - 1:
-                            delay = base_delay * (2 ** attempt)
-                            logging.warning(f"Request failed due to a network/proxy issue ({type(e).__name__}). Retrying in {delay:.2f} seconds... (Attempt {attempt + 1}/{max_retries})")
-                            await asyncio.sleep(delay)
-                        else:
-                            logging.error(f"Request failed after {max_retries} attempts. Giving up. Error: {e}")
-                            return None
-                    else:
-                        # For other client errors (like 404), don't retry, just log and fail.
-                        logging.error(f"Unrecoverable client error. Not retrying. Error: {e}")
-                        return None
-            return None
-        return wrapper
-    return decorator
+@wraps(asyncio.coroutine)
+def retry_on_error(func):
+    """
+    A decorator to retry a function on specific HTTP/network errors with exponential backoff.
+    This is a direct decorator, not a factory.
+    """
+    @wraps(func)
+    async def wrapper(*args, **kwargs):
+        max_retries = 3
+        base_delay = 2.0
+        for attempt in range(max_retries):
+            try:
+                # Use a semaphore to limit concurrency
+                async with semaphore:
+                    return await func(*args, **kwargs)
+            except (httpx.HTTPStatusError, httpx.RequestError, httpx.ProxyError, json.JSONDecodeError) as e:
+                # Retry on server errors (5xx), rate limiting (429), temp blocks (403), or proxy auth issues (407)
+                retriable_statuses = {403, 407, 429}
+                is_retriable_status = isinstance(e, httpx.HTTPStatusError) and (e.response.status_code >= 500 or e.response.status_code in retriable_statuses)
+                is_network_error = isinstance(e, (httpx.RequestError, json.JSONDecodeError))
 
-@retry_on_error()
+                if is_retriable_status or is_network_error:
+                    if attempt < max_retries - 1:
+                        delay = base_delay * (2 ** attempt) + random.uniform(0, 1) # Add jitter
+                        logging.warning(f"Request for '{func.__name__}' failed with {type(e).__name__}. Retrying in {delay:.2f}s... (Attempt {attempt + 1}/{max_retries})")
+                        await asyncio.sleep(delay)
+                    else:
+                        logging.error(f"Request for '{func.__name__}' failed after {max_retries} attempts. Giving up. Final error: {e}")
+                        return None
+                else:
+                    # For other client errors (like 404), don't retry, just log and fail.
+                    logging.error(f"Unrecoverable client error for '{func.__name__}'. Not retrying. Error: {e}")
+                    return None
+        return None # Should not be reached, but as a fallback
+    return wrapper
+
+@retry_on_error
 async def http_get(url: str, **kwargs) -> httpx.Response:
     """A wrapper for httpx.get that includes retry logic."""
     response = await http_client.get(url, **kwargs)
     response.raise_for_status()
     return response
 
-@retry_on_error()
+@retry_on_error
+async def http_post(url: str, **kwargs) -> httpx.Response:
+    """A wrapper for httpx.post that includes retry logic."""
+    response = await http_client.post(url, **kwargs)
+    response.raise_for_status()
+    return response
+
+@retry_on_error
 async def get_twitch_token() -> Optional[str]:
     """Fetches a Twitch app access token, using a cache to avoid repeated requests."""
     if not TWITCH_CLIENT_ID or not TWITCH_CLIENT_SECRET:
@@ -173,8 +178,10 @@ async def get_twitch_token() -> Optional[str]:
         "grant_type": "client_credentials",
     }
     # Let the retry decorator handle exceptions
-    response = await http_client.post(url, params=params)
-    response.raise_for_status()
+    # Use the new http_post wrapper to ensure retries on failure. No proxy is needed for Twitch.
+    response = await http_post(url, params=params)
+    if not response:
+        raise Exception("http_post for Twitch token returned None after retries.")
     data = response.json()
     token = data["access_token"]
     expires_in = data.get("expires_in", 3600) # Default to 1 hour
@@ -213,7 +220,7 @@ async def fetch_all_app_ids() -> List[str]:
     """Fetches all App IDs from the official Steam API."""
     url = "https://api.steampowered.com/ISteamApps/GetAppList/v2/" # This is a public API, no proxy needed.
     try:
-        response = await http_get(url)
+        response = await http_get(url) # This function already has retry logic
         if not response:
             raise Exception("http_get returned None")
         data = response.json()
@@ -247,7 +254,7 @@ async def fetch_most_played_ids() -> List[str]:
     logging.info("Fetching Most Played list...")
     url = "https://store.steampowered.com/charts/mostplayed"
     # This request goes to store.steampowered.com, so we use the proxy.
-    response = await http_get(url, proxies=get_random_proxy_config())
+    response = await http_get(url, proxies=get_random_proxy_config()) # This function already has retry logic
     if not response:
         raise Exception("Failed to fetch most played page after multiple retries.")
     soup = BeautifulSoup(response.text, "html.parser")
@@ -256,13 +263,13 @@ async def fetch_most_played_ids() -> List[str]:
         raise Exception("Failed to fetch most played IDs after multiple retries.")
     return ids
 
-@retry_on_error()
+@retry_on_error
 async def fetch_game_details(app_id: str) -> Optional[Dict[str, Any]]: # Keep retry here as it's a self-contained task
     """Fetches detailed metadata for a single game from the Steam API."""
     url = f"https://store.steampowered.com/api/appdetails?appids={app_id}" # Internal store API, needs proxy.
     try:
         # This request goes to store.steampowered.com, so we use the proxy.
-        response = await http_get(url, proxies=get_random_proxy_config())
+        response = await http_get(url, proxies=get_random_proxy_config()) # This function already has retry logic
         if not response:
             raise Exception("http_get returned None")
         data = response.json().get(app_id, {})
@@ -290,7 +297,7 @@ def normalize_game_name(name: str) -> str:
     """Removes common symbols that interfere with API lookups."""
     return name.replace('™', '').replace('®', '').strip()
 
-@retry_on_error()
+@retry_on_error
 async def fetch_timeseries_data(app_id: str, game_name: str, price_info: Dict, twitch_token: Optional[str]) -> Optional[Dict[str, Any]]:
     """Fetches dynamic, time-series data for a single game."""
     # 1. Fetch player count
@@ -298,7 +305,7 @@ async def fetch_timeseries_data(app_id: str, game_name: str, price_info: Dict, t
     if STEAM_API_KEY:
         try:
             player_url = f"https://api.steampowered.com/ISteamUserStats/GetNumberOfCurrentPlayers/v1/?appid={app_id}&key={STEAM_API_KEY}" # Public API, no proxy.
-            player_response = await http_get(player_url)
+            player_response = await http_get(player_url) # This function already has retry logic
             if not player_response:
                 raise Exception("http_get for player count returned None")
             player_data = player_response.json().get("response", {})
@@ -313,7 +320,7 @@ async def fetch_timeseries_data(app_id: str, game_name: str, price_info: Dict, t
             normalized_name = normalize_game_name(game_name)
             stream_url = f"https://api.twitch.tv/helix/streams?game_name={normalized_name}" # Twitch API, no proxy.
             headers = {"Client-ID": TWITCH_CLIENT_ID, "Authorization": f"Bearer {twitch_token}"}
-            stream_response = await http_get(stream_url, headers=headers)
+            stream_response = await http_get(stream_url, headers=headers) # This function already has retry logic
             if not stream_response:
                 raise Exception("http_get for streamer count returned None")
             streamer_count = len(stream_response.json().get("data", []))
