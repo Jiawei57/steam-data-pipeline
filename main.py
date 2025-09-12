@@ -110,6 +110,21 @@ class ScrapingState(Base):
 
 # --- External API Services ---
 
+async def check_proxy_health() -> bool:
+    """Performs a quick health check on one of the proxies to ensure the pool is usable."""
+    if not proxy_list:
+        return True # No proxies to check, so health is considered ok.
+    
+    logging.info("Performing proxy health check...")
+    test_url = "https://httpbin.org/ip" # A reliable service to test connectivity
+    proxy_config = get_random_proxy_config()
+    response = await make_request_with_retry('GET', test_url, proxies=proxy_config, timeout=15.0)
+    if response and response.status_code == 200:
+        logging.info(f"Proxy health check successful. Response from proxy: {response.json()}")
+        return True
+    logging.critical("Proxy health check FAILED. The proxy pool may be down or misconfigured.")
+    return False
+
 async def make_request_with_retry(method: str, url: str, **kwargs) -> Optional[httpx.Response]:
     """Makes an HTTP request with retry logic, using a semaphore to limit concurrency."""
     max_retries = 3
@@ -332,6 +347,11 @@ async def scrape_and_store_data():
     is_scraping = True
     logging.info("Starting data scraping process...")
     db = SessionLocal()
+
+    # Perform a proxy health check before starting any heavy work
+    if not await check_proxy_health():
+        logging.error("Aborting scrape due to proxy health check failure.")
+        return
     try:
         # Ensure tables exist
         Base.metadata.create_all(bind=engine)
