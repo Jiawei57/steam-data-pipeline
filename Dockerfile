@@ -12,6 +12,7 @@ RUN useradd --system --uid 1000 --gid 0 -m -s /bin/bash appuser
 # Install Python dependencies.
 # Copying requirements first and using --chown improves layer caching and security.
 COPY --chown=appuser:0 requirements.txt .
+# Install dependencies as root to ensure they are in the global site-packages.
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code.
