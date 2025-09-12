@@ -1,30 +1,34 @@
-# Use a stable Python slim base image which is lightweight and secure.
-FROM python:3.11-slim-bullseye
+# Use an official Python runtime as a parent image
+FROM python:3.11-slim-bullseye AS base
 
-# Set environment variables to ensure logs are sent correctly and define the app home.
-ENV PYTHONUNBUFFERED True
-ENV APP_HOME /app
-WORKDIR $APP_HOME
+# Set environment variables to prevent Python from writing .pyc files to disc
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
 
-# Create a non-root user to run the application for better security.
+# Set the working directory in the container
+WORKDIR /app
+
+# Create a non-root user to run the application for better security
 RUN useradd --system --uid 1000 --gid 0 -m -s /bin/bash appuser
 
-# Install Python dependencies.
-# Copying requirements first and using --chown improves layer caching and security.
+# --- Dependencies Stage ---
+FROM base AS dependencies
+
+# Copy the requirements file
 COPY --chown=appuser:0 requirements.txt .
-# Install dependencies as root to ensure they are in the global site-packages.
+
+# Install any needed packages specified in requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code.
-# Copy all Python source files. config.ini is for local dev and is not copied.
+# --- Application Stage ---
+FROM base AS application
+COPY --from=dependencies /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+
+# Copy the current directory contents into the container at /app
 COPY --chown=appuser:0 *.py ./
 
-# Also copy the proxy's CA certificate into the container.
-COPY --chown=appuser:0 brightdata_ca.pem .
-
-# Now, switch to the non-root user to run the application.
+# Switch to the non-root user
 USER appuser
 
-# Run the runner script on container startup.
-# This starts the long-running scraping task directly.
+# Command to run the application (the background worker)
 CMD ["python", "runner.py"]
