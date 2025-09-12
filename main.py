@@ -3,6 +3,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional, Tuple
+import random
 
 import httpx
 import json
@@ -25,7 +26,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 STEAM_API_KEY = os.getenv("STEAM_API_KEY")
 TWITCH_CLIENT_ID = os.getenv("TWITCH_CLIENT_ID")
 TWITCH_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET")
-PROXY_URL = os.getenv("PROXY_URL") # For routing requests through a proxy
+PROXY_URLS = os.getenv("PROXY_URLS") # Comma-separated list of proxy URLs
 
 if not DATABASE_URL:
     logging.error("DATABASE_URL environment variable not set. Application cannot start.")
@@ -49,12 +50,24 @@ headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
 }
 
+# The httpx client will now be created without a default proxy.
 http_client = httpx.AsyncClient(
     timeout=30.0, 
     follow_redirects=True, 
-    headers=headers,
-    proxy=PROXY_URL if PROXY_URL else None
+    headers=headers
 )
+
+# Parse the comma-separated proxy URLs into a list for rotation
+proxy_list = [url.strip() for url in PROXY_URLS.split(',')] if PROXY_URLS else []
+if proxy_list:
+    logging.info(f"Loaded {len(proxy_list)} proxies for rotation.")
+
+def get_random_proxy_config() -> Optional[Dict[str, str]]:
+    """Selects a random proxy from the list and returns it in httpx format."""
+    if not proxy_list:
+        return None
+    proxy_url = random.choice(proxy_list)
+    return {"http://": proxy_url, "https://": proxy_url}
 
 # --- Database Setup (SQLAlchemy ORM) ---
 
@@ -174,8 +187,9 @@ async def fetch_paginated_list(base_url: str, limit: int, selector: str, id_extr
         # Steam search pages use a 'page' query parameter.
         url = f"{base_url}&page={page}"
         logging.info(f"Fetching page {page} from {url}")
-        response = await http_client.get(url) # Let exceptions bubble up to the retry decorator
-        response.raise_for_status()
+        # This request goes to store.steampowered.com, so we use the proxy.
+        response = await http_client.get(url, proxies=get_random_proxy_config())
+        response.raise_for_status() # Let exceptions bubble up to the retry decorator
         soup = BeautifulSoup(response.text, "html.parser")
         page_app_ids = [id_extractor(row) for row in soup.select(selector) if id_extractor(row)]
         if not page_app_ids:
@@ -188,7 +202,7 @@ async def fetch_paginated_list(base_url: str, limit: int, selector: str, id_extr
 @retry_on_error()
 async def fetch_all_app_ids() -> List[str]:
     """Fetches all App IDs from the official Steam API."""
-    url = "https://api.steampowered.com/ISteamApps/GetAppList/v2/"
+    url = "https://api.steampowered.com/ISteamApps/GetAppList/v2/" # This is a public API, no proxy needed.
     try:
         response = await http_client.get(url)
         response.raise_for_status()
@@ -222,7 +236,8 @@ async def fetch_most_played_ids() -> List[str]:
     """Fetches Most Played game IDs from Steam charts, with retry logic."""
     logging.info("Fetching Most Played list...")
     url = "https://store.steampowered.com/charts/mostplayed"
-    response = await http_client.get(url)
+    # This request goes to store.steampowered.com, so we use the proxy.
+    response = await http_client.get(url, proxies=get_random_proxy_config())
     response.raise_for_status()
     soup = BeautifulSoup(response.text, "html.parser")
     ids = [row.get("data-appid") for row in soup.select("tr.weeklytopsellers_TableRow_2-RN6") if row.get("data-appid")]
@@ -233,9 +248,10 @@ async def fetch_most_played_ids() -> List[str]:
 @retry_on_error()
 async def fetch_game_details(app_id: str) -> Optional[Dict[str, Any]]:
     """Fetches detailed metadata for a single game from the Steam API."""
-    url = f"https://store.steampowered.com/api/appdetails?appids={app_id}"
+    url = f"https://store.steampowered.com/api/appdetails?appids={app_id}" # Internal store API, needs proxy.
     try:
-        response = await http_client.get(url)
+        # This request goes to store.steampowered.com, so we use the proxy.
+        response = await http_client.get(url, proxies=get_random_proxy_config())
         response.raise_for_status()
         data = response.json().get(app_id, {})
         if data.get("success"):
@@ -269,7 +285,7 @@ async def fetch_timeseries_data(app_id: str, game_name: str, price_info: Dict, t
     player_count = 0
     if STEAM_API_KEY:
         try:
-            player_url = f"https://api.steampowered.com/ISteamUserStats/GetNumberOfCurrentPlayers/v1/?appid={app_id}&key={STEAM_API_KEY}"
+            player_url = f"https://api.steampowered.com/ISteamUserStats/GetNumberOfCurrentPlayers/v1/?appid={app_id}&key={STEAM_API_KEY}" # Public API, no proxy.
             player_response = await http_client.get(player_url)
             player_data = player_response.json().get("response", {})
             player_count = player_data.get("player_count", 0)
@@ -281,7 +297,7 @@ async def fetch_timeseries_data(app_id: str, game_name: str, price_info: Dict, t
     if twitch_token and game_name:
         try:
             normalized_name = normalize_game_name(game_name)
-            stream_url = f"https://api.twitch.tv/helix/streams?game_name={normalized_name}"
+            stream_url = f"https://api.twitch.tv/helix/streams?game_name={normalized_name}" # Twitch API, no proxy.
             headers = {"Client-ID": TWITCH_CLIENT_ID, "Authorization": f"Bearer {twitch_token}"}
             stream_response = await http_client.get(stream_url, headers=headers)
             streamer_count = len(stream_response.json().get("data", []))
