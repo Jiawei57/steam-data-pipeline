@@ -149,6 +149,13 @@ def retry_on_error(max_retries: int = 3, base_delay: float = 1.0):
     return decorator
 
 @retry_on_error()
+async def http_get(url: str, **kwargs) -> httpx.Response:
+    """A wrapper for httpx.get that includes retry logic."""
+    response = await http_client.get(url, **kwargs)
+    response.raise_for_status()
+    return response
+
+@retry_on_error()
 async def get_twitch_token() -> Optional[str]:
     """Fetches a Twitch app access token, using a cache to avoid repeated requests."""
     if not TWITCH_CLIENT_ID or not TWITCH_CLIENT_SECRET:
@@ -188,8 +195,7 @@ async def fetch_paginated_list(base_url: str, limit: int, selector: str, id_extr
         url = f"{base_url}&page={page}"
         logging.info(f"Fetching page {page} from {url}")
         # This request goes to store.steampowered.com, so we use the proxy.
-        response = await http_client.get(url, proxies=get_random_proxy_config())
-        response.raise_for_status() # Let exceptions bubble up to the retry decorator
+        response = await http_get(url, proxies=get_random_proxy_config())
         soup = BeautifulSoup(response.text, "html.parser")
         page_app_ids = [id_extractor(row) for row in soup.select(selector) if id_extractor(row)]
         if not page_app_ids:
@@ -199,13 +205,12 @@ async def fetch_paginated_list(base_url: str, limit: int, selector: str, id_extr
         await asyncio.sleep(1)  # Be polite and wait a second between page loads
     return all_app_ids[:limit]
 
-@retry_on_error()
+# This function no longer needs a retry decorator, as the inner http_get handles it.
 async def fetch_all_app_ids() -> List[str]:
     """Fetches all App IDs from the official Steam API."""
     url = "https://api.steampowered.com/ISteamApps/GetAppList/v2/" # This is a public API, no proxy needed.
     try:
-        response = await http_client.get(url)
-        response.raise_for_status()
+        response = await http_get(url)
         data = response.json()
         # The API returns a list of {"appid": 123, "name": "Game Name"}
         apps = data.get("applist", {}).get("apps", [])
@@ -216,7 +221,7 @@ async def fetch_all_app_ids() -> List[str]:
         logging.error(f"Failed to fetch all app IDs: {e}")
         return []
 
-@retry_on_error(max_retries=5, base_delay=5.0)
+# This function no longer needs a retry decorator, as the inner fetch_paginated_list now uses a retrying http_get.
 async def fetch_top_selling_ids(limit: int = 500) -> List[str]:
     """Fetches Top Selling game IDs from Steam search, with retry logic."""
     logging.info("Fetching Top Sellers list...")
@@ -231,14 +236,13 @@ async def fetch_top_selling_ids(limit: int = 500) -> List[str]:
         raise Exception("Failed to fetch top selling IDs after multiple retries.")
     return ids
 
-@retry_on_error(max_retries=5, base_delay=5.0)
+# This function no longer needs a retry decorator, as the inner http_get handles it.
 async def fetch_most_played_ids() -> List[str]:
     """Fetches Most Played game IDs from Steam charts, with retry logic."""
     logging.info("Fetching Most Played list...")
     url = "https://store.steampowered.com/charts/mostplayed"
     # This request goes to store.steampowered.com, so we use the proxy.
-    response = await http_client.get(url, proxies=get_random_proxy_config())
-    response.raise_for_status()
+    response = await http_get(url, proxies=get_random_proxy_config())
     soup = BeautifulSoup(response.text, "html.parser")
     ids = [row.get("data-appid") for row in soup.select("tr.weeklytopsellers_TableRow_2-RN6") if row.get("data-appid")]
     if not ids:
@@ -246,13 +250,12 @@ async def fetch_most_played_ids() -> List[str]:
     return ids
 
 @retry_on_error()
-async def fetch_game_details(app_id: str) -> Optional[Dict[str, Any]]:
+async def fetch_game_details(app_id: str) -> Optional[Dict[str, Any]]: # Keep retry here as it's a self-contained task
     """Fetches detailed metadata for a single game from the Steam API."""
     url = f"https://store.steampowered.com/api/appdetails?appids={app_id}" # Internal store API, needs proxy.
     try:
         # This request goes to store.steampowered.com, so we use the proxy.
-        response = await http_client.get(url, proxies=get_random_proxy_config())
-        response.raise_for_status()
+        response = await http_get(url, proxies=get_random_proxy_config())
         data = response.json().get(app_id, {})
         if data.get("success"):
             details = data.get("data", {})
@@ -286,7 +289,7 @@ async def fetch_timeseries_data(app_id: str, game_name: str, price_info: Dict, t
     if STEAM_API_KEY:
         try:
             player_url = f"https://api.steampowered.com/ISteamUserStats/GetNumberOfCurrentPlayers/v1/?appid={app_id}&key={STEAM_API_KEY}" # Public API, no proxy.
-            player_response = await http_client.get(player_url)
+            player_response = await http_get(player_url)
             player_data = player_response.json().get("response", {})
             player_count = player_data.get("player_count", 0)
         except Exception:
@@ -299,7 +302,7 @@ async def fetch_timeseries_data(app_id: str, game_name: str, price_info: Dict, t
             normalized_name = normalize_game_name(game_name)
             stream_url = f"https://api.twitch.tv/helix/streams?game_name={normalized_name}" # Twitch API, no proxy.
             headers = {"Client-ID": TWITCH_CLIENT_ID, "Authorization": f"Bearer {twitch_token}"}
-            stream_response = await http_client.get(stream_url, headers=headers)
+            stream_response = await http_get(stream_url, headers=headers)
             streamer_count = len(stream_response.json().get("data", []))
         except Exception:
             logging.warning(f"Could not fetch streamer count for game '{game_name}'.")
