@@ -110,7 +110,6 @@ class ScrapingState(Base):
 
 # --- External API Services ---
 
-@wraps(asyncio.coroutine)
 def retry_on_error(func):
     """
     A decorator to retry a function on specific HTTP/network errors with exponential backoff.
