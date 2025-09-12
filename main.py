@@ -55,17 +55,14 @@ proxy_list = [url.strip() for url in PROXY_URLS.split(',')] if PROXY_URLS else [
 if proxy_list:
     logging.info(f"Loaded {len(proxy_list)} proxies for rotation.")
 
-def get_random_proxy_config() -> Optional[Dict[str, str]]:
-    """Selects a random proxy from the list and returns it in httpx format."""
-    if not proxy_list:
-        return None
-    proxy_url = random.choice(proxy_list)
-    return {"http://": proxy_url, "https://": proxy_url}
-
 # --- Client with Advanced Proxy Mounting ---
 
-# Create a transport that uses a random proxy. Note: This proxy is chosen once at startup for the main client.
-proxy_transport = httpx.AsyncProxyTransport.from_url(random.choice(proxy_list)) if proxy_list else None
+# Select a single proxy URL at startup for the main client's transport.
+# This provides stability. The health check will verify the broader pool.
+proxy_url_for_mount = random.choice(proxy_list) if proxy_list else None
+
+# Create a transport that uses the selected proxy. This is the correct httpx class.
+proxy_transport = httpx.AsyncHTTPTransport(proxy=proxy_url_for_mount) if proxy_url_for_mount else None
 
 # Mount the proxy transport only for requests to store.steampowered.com
 mounts = {"https://store.steampowered.com": proxy_transport} if proxy_transport else {}
@@ -133,8 +130,8 @@ async def check_proxy_health() -> bool:
     proxies_to_check = random.sample(proxy_list, min(3, len(proxy_list)))    
 
     for i, proxy_url in enumerate(proxies_to_check):
-        logging.info(f"Health check attempt {i+1}/{len(proxies_to_check)} on proxy ending in '...{proxy_url[-10:]}'")
         try:
+            logging.info(f"Health check attempt {i+1}/{len(proxies_to_check)} on proxy ending in '...{proxy_url[-10:]}'")
             # Create a temporary client configured to use ONLY this specific proxy
             async with httpx.AsyncClient(proxies=proxy_url, timeout=15.0) as temp_client:
                 response = await temp_client.get(test_url)
@@ -142,7 +139,7 @@ async def check_proxy_health() -> bool:
                 logging.info(f"Proxy health check successful on attempt {i+1}. Response: {response.json()}")
                 return True # If one proxy works, the pool is considered healthy.
         except Exception as e:
-            logging.warning(f"Health check attempt {i+1} with proxy ...{proxy_url[-10:]} failed: {type(e).__name__}")
+            logging.warning(f"Health check attempt {i+1} with proxy ...{proxy_url[-10:]} failed: {type(e).__name__} - {e}")
             # Continue to the next proxy in the sample
     
     logging.critical(f"Proxy health check FAILED after trying {len(proxies_to_check)} different proxies. The proxy pool is likely down or misconfigured.")
@@ -155,7 +152,7 @@ async def make_request_with_retry(method: str, url: str, **kwargs) -> Optional[h
     for attempt in range(max_retries):
         try:
             async with semaphore:
-                # Always use the global http_client. Proxying is handled by its 'mounts' config.
+                # Always use the global http_client. Proxying for store.steampowered.com is handled by its 'mounts' config.
                 if method.upper() == 'GET':
                     response = await http_client.get(url, **kwargs)
                 elif method.upper() == 'POST':
