@@ -2,7 +2,7 @@ fastapi
 uvicorn
 pandas
 beautifulsoup4
-httpx
+httpx>=0.25.0 # Force a modern version that supports per-request proxies
 sqlalchemy
 psycopg2-binary
 python-dotenv
