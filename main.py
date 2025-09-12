@@ -25,6 +25,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 STEAM_API_KEY = os.getenv("STEAM_API_KEY")
 TWITCH_CLIENT_ID = os.getenv("TWITCH_CLIENT_ID")
 TWITCH_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET")
+PROXY_URL = os.getenv("PROXY_URL") # For routing requests through a proxy
 
 if not DATABASE_URL:
     logging.error("DATABASE_URL environment variable not set. Application cannot start.")
@@ -47,10 +48,16 @@ semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
 headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
 }
+
+# Configure proxies if a PROXY_URL is provided
+proxies = {"http://": PROXY_URL, "https://": PROXY_URL} if PROXY_URL else None
+
 http_client = httpx.AsyncClient(
     timeout=30.0, 
     follow_redirects=True, 
-    headers=headers)
+    headers=headers,
+    proxies=proxies
+)
 
 # --- Database Setup (SQLAlchemy ORM) ---
 
@@ -203,6 +210,34 @@ async def fetch_all_app_ids() -> List[str]:
         logging.error(f"Failed to fetch all app IDs: {e}")
         return []
 
+@retry_on_error(max_retries=5, base_delay=5.0)
+async def fetch_top_selling_ids(limit: int = 500) -> List[str]:
+    """Fetches Top Selling game IDs from Steam search, with retry logic."""
+    logging.info("Fetching Top Sellers list...")
+    ids = await fetch_paginated_list(
+        base_url="https://store.steampowered.com/search/?filter=topsellers",
+        limit=limit,
+        selector="a.search_result_row",
+        id_extractor=lambda row: row.get("data-ds-appid")
+    )
+    if not ids:
+        # This will now only happen after all retries have failed
+        raise Exception("Failed to fetch top selling IDs after multiple retries.")
+    return ids
+
+@retry_on_error(max_retries=5, base_delay=5.0)
+async def fetch_most_played_ids() -> List[str]:
+    """Fetches Most Played game IDs from Steam charts, with retry logic."""
+    logging.info("Fetching Most Played list...")
+    url = "https://store.steampowered.com/charts/mostplayed"
+    response = await http_client.get(url)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "html.parser")
+    ids = [row.get("data-appid") for row in soup.select("tr.weeklytopsellers_TableRow_2-RN6") if row.get("data-appid")]
+    if not ids:
+        raise Exception("Failed to fetch most played IDs after multiple retries.")
+    return ids
+
 @retry_on_error()
 async def fetch_game_details(app_id: str) -> Optional[Dict[str, Any]]:
     """Fetches detailed metadata for a single game from the Steam API."""
@@ -291,26 +326,18 @@ async def scrape_and_store_data():
         Base.metadata.create_all(bind=engine)
 
         # --- Smart Hybrid Strategy: Fetch a pool of valuable games ---
-        logging.info("Fetching candidate games from Top Sellers and Most Played lists...")
-        
-        # Fetch Top 500 Top Sellers with pagination
-        top_selling_ids = await fetch_paginated_list(
-            base_url="https://store.steampowered.com/search/?filter=topsellers",
-            limit=500,
-            selector="a.search_result_row",
-            id_extractor=lambda row: row.get("data-ds-appid")
-        )
-
-        # The most played list is not paginated, so we can scrape it directly.
-        # The URL has changed, but follow_redirects=True handles this.
-        most_played_ids = []
         try:
-            response = await http_client.get("https://store.steampowered.com/charts/mostplayed")
-            response.raise_for_status()
-            soup = BeautifulSoup(response.text, "html.parser")
-            most_played_ids = [row.get("data-appid") for row in soup.select("tr.weeklytopsellers_TableRow_2-RN6") if row.get("data-appid")]
+            logging.info("Fetching candidate games from Top Sellers and Most Played lists...")
+            
+            # Use the new robust fetching functions with retries
+            top_selling_ids_task = fetch_top_selling_ids(limit=500)
+            most_played_ids_task = fetch_most_played_ids()
+
+            results = await asyncio.gather(top_selling_ids_task, most_played_ids_task, return_exceptions=True)
+            top_selling_ids = results[0] if not isinstance(results[0], Exception) else []
+            most_played_ids = results[1] if not isinstance(results[1], Exception) else []
         except Exception as e:
-            logging.error(f"Failed to scrape most played app IDs: {e}")
+            logging.critical(f"Could not fetch initial game lists even after retries: {e}")
 
         # Combine and deduplicate the lists to create a high-value pool of games
         candidate_app_ids = sorted(list(set(top_selling_ids + most_played_ids)))
