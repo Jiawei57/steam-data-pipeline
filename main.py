@@ -111,18 +111,34 @@ class ScrapingState(Base):
 # --- External API Services ---
 
 async def check_proxy_health() -> bool:
-    """Performs a quick health check on one of the proxies to ensure the pool is usable."""
+    """
+    Performs a more robust health check on the proxy pool.
+    It tries up to 3 different random proxies before declaring the pool unusable.
+    """
     if not proxy_list:
+        logging.info("No proxies configured. Skipping health check.")
         return True # No proxies to check, so health is considered ok.
     
-    logging.info("Performing proxy health check...")
-    test_url = "https://httpbin.org/ip" # A reliable service to test connectivity
-    proxy_config = get_random_proxy_config()
-    response = await make_request_with_retry('GET', test_url, proxies=proxy_config, timeout=15.0)
-    if response and response.status_code == 200:
-        logging.info(f"Proxy health check successful. Response from proxy: {response.json()}")
-        return True
-    logging.critical("Proxy health check FAILED. The proxy pool may be down or misconfigured.")
+    logging.info("Performing robust proxy health check...")
+    test_url = "https://ip.decodo.com/json" # Use the official endpoint provided by the proxy service
+    
+    # Create a shuffled sample of up to 3 proxies to check.
+    proxies_to_check = random.sample(proxy_list, min(3, len(proxy_list)))
+    
+    for i, proxy_url in enumerate(proxies_to_check):
+        proxy_config = {"http://": proxy_url, "https://": proxy_url}
+        logging.info(f"Health check attempt {i+1}/{len(proxies_to_check)} on proxy ending in '...{proxy_url[-10:]}'")
+        try:
+            # Make a single, quick request. No need for the full retry logic here.
+            response = await http_client.get(test_url, proxies=proxy_config, timeout=15.0)
+            response.raise_for_status()
+            logging.info(f"Proxy health check successful on attempt {i+1}. Response: {response.json()}")
+            return True # If one proxy works, the pool is considered healthy.
+        except Exception as e:
+            logging.warning(f"Health check attempt {i+1} with proxy ...{proxy_url[-10:]} failed: {type(e).__name__}")
+            # Continue to the next proxy in the sample
+    
+    logging.critical(f"Proxy health check FAILED after trying {len(proxies_to_check)} different proxies. The proxy pool is likely down or misconfigured.")
     return False
 
 async def make_request_with_retry(method: str, url: str, **kwargs) -> Optional[httpx.Response]:
