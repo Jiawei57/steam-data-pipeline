@@ -10,7 +10,7 @@ import httpx
 import json
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends 
-from sqlalchemy import create_engine, Column, String, Integer, TIMESTAMP, text, inspect, Index
+from sqlalchemy import create_engine, Column, String, Integer, TIMESTAMP, text, inspect, Index, Numeric
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from functools import wraps
@@ -78,7 +78,8 @@ class GamesTimeseries(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     app_id = Column(String) # The composite index below covers this
     timestamp = Column(TIMESTAMP(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
-    price = Column(String)
+    price_numeric = Column(Numeric(10, 2)) # e.g., 19.99
+    price_currency = Column(String(3)) # e.g., 'USD', 'EUR'
     discount_percent = Column(Integer)
     player_count = Column(Integer)
     streamer_count = Column(Integer)
@@ -253,13 +254,14 @@ async def fetch_game_details(app_id: str) -> Optional[Dict[str, Any]]: # Keep re
             details = data.get("data", {})
             return {
                 "app_id": app_id,
-                "name": details.get("name"),
+                "name": details.get("name", "").strip(), # Add strip() to clean up names
                 "type": details.get("type"),
                 "release_date": details.get("release_date", {}).get("date"),
                 "developer": ", ".join(details.get("developers", [])),
                 "publisher": ", ".join(details.get("publishers", [])),
                 "genres": ", ".join([g["description"] for g in details.get("genres", [])]),
                 # Also extract price info here to avoid a second API call
+                # The price_overview object contains raw numeric values, which is much better.
                 "price_overview": details.get("price_overview", {
                     "final_formatted": "N/A",
                     "discount_percent": 0
@@ -273,7 +275,7 @@ def normalize_game_name(name: str) -> str:
     """Removes common symbols that interfere with API lookups."""
     return name.replace('™', '').replace('®', '').strip()
 
-async def fetch_timeseries_data(app_id: str, game_name: str, price_info: Dict, twitch_token: Optional[str]) -> Optional[Dict[str, Any]]:
+async def fetch_timeseries_data(app_id: str, game_name: str, price_info: Optional[Dict], twitch_token: Optional[str]) -> Optional[Dict[str, Any]]:
     """Fetches dynamic, time-series data for a single game."""
     # 1. Fetch player count
     player_count = 0
@@ -303,13 +305,20 @@ async def fetch_timeseries_data(app_id: str, game_name: str, price_info: Dict, t
             logging.warning(f"Could not fetch streamer count for game '{game_name}'.")
 
     # 3. Use the pre-fetched price information
-    price = price_info.get("final_formatted", "N/A")
-    discount = price_info.get("discount_percent", 0)
+    price_numeric = None
+    price_currency = None
+    discount = 0
+    if price_info:
+        # 'initial' is the price in the smallest currency unit (e.g., cents)
+        price_numeric = price_info.get("initial", 0) / 100.0
+        price_currency = price_info.get("currency")
+        discount = price_info.get("discount_percent", 0)
 
     return {
         "app_id": app_id,
         "timestamp": datetime.now(timezone.utc),
-        "price": price,
+        "price_numeric": price_numeric,
+        "price_currency": price_currency,
         "discount_percent": discount,
         "player_count": player_count,
         "streamer_count": streamer_count,

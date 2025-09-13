@@ -73,7 +73,8 @@
 1.  **自動重新部署**：儲存環境變數後，Render 會自動觸發一次新的部署。
 2.  **監控日誌**：進入 `steam-scraper-worker` 的 **Logs** 頁籤。您應該會看到日誌輸出，代表您的爬蟲已經成功啟動並開始工作。
 3.  **確認資料寫入**：您可以隨時使用 DBeaver 等工具連接到您的 `steam-db` 資料庫，查詢 `scraping_state` 表來查看最新的進度。
-
+    *(推薦：您可以使用專業的資料庫圖形化工具如 `pgAdmin4` 或 `DBeaver` 來連線。如果您使用 VS Code，也可以安裝 "PostgreSQL" 擴充套件。對於偏好命令列的開發者，`psql` 是最高效的選擇。)*
+    *(pgAdmin4 小技巧：如果您在 pgAdmin4 中找不到左側的「Browser」導覽視窗，可以點擊頂端主選單的 `File` -> `Reset Layout...` 來恢復預設版面配置。)*
 恭喜您！您已成功部署一個專業、穩健且可恢復的大規模數據抓取任務。
 
 ---
@@ -115,22 +116,37 @@
 
 ### 步驟五：驗證數據增長
 
-部署完成後，您的背景工人會持續運行。您可以透過以下方法，使用 DBeaver 等資料庫客戶端工具來確認資料正在有效地、逐漸地增加。
+部署完成後，您的背景工人會持續運行。您可以透過以下方法，使用資料庫客戶端工具來確認資料正在有效地、逐漸地增加。
 
-1.  **檢查爬取進度**:
-    執行以下 SQL 查詢，查看爬蟲處理到哪個批次。`value` 欄位會隨著時間穩定增長，代表您的「可恢復性」機制正在正常運作。
+1.  **使用 `psql` 命令列工具 (推薦)**:
+    a.  安裝 PostgreSQL 的 "Command Line Tools"。
+    b.  打開終端機，直接貼上您在 Render 儀表板複製的 "External Connection String"：
+    ```bash
+    psql "postgresql://steam_data_user:qA0QvdeNR2plOIBbCMBqXmUYXEnu5Jew@dpg-d318rpumcj7s73869f8g-a.oregon-postgres.render.com/steam_data"
+    ```
+    *** Windows 使用者提示 ***
+    如果您在 Windows 的終端機 (如 Git Bash / MINGW64) 中執行查詢時遇到 `...has no equivalent in encoding "BIG5"` 的錯誤，
+    這是因為您的客戶端編碼與資料庫的 UTF-8 編碼不符。
+    請在執行 `psql` 連線指令 **之前**，先執行以下指令來設定客戶端編碼：
+    `export PGCLIENTENCODING=UTF8`
+    為了讓此設定永久生效，您可以將此指令加入您的 shell 設定檔中 (例如 `echo 'export PGCLIENTENCODING=UTF8' >> ~/.bash_profile`)。
+    *(提示：在 Windows 上，您可以使用 `cmd` 或 `PowerShell`；在 macOS 或 Linux 上，使用 `Terminal`。貼上指令後按 Enter 鍵。)*
+    c.  連線成功後，您就可以執行 SQL 查詢了。
+
+2.  **檢查爬取狀態**:
+    執行以下 SQL 查詢，查看爬蟲的鎖定狀態。`is_scraping_active` 的值應該會在爬取時變為 `true`，爬取結束後變為 `false`。
     ```sql
-    SELECT * FROM scraping_state WHERE key = 'last_processed_index';
+    SELECT * FROM scraping_state;
     ```
 
-2.  **確認元數據與時間序列數據數量**:
+3.  **確認元數據與時間序列數據數量**:
     執行以下查詢，確認資料表的總記錄數。這兩個數字應該會隨著爬蟲的進度而穩定增加。
     ```sql
     SELECT COUNT(*) FROM games_metadata;
     SELECT COUNT(*) FROM games_timeseries;
     ```
 
-3.  **抽樣檢查資料有效性**:
+4.  **抽樣檢查資料有效性**:
     隨機抽取幾筆資料，檢查其內容是否符合預期，例如查看最新的時間序列資料。
     ```sql
     SELECT * FROM games_timeseries ORDER BY timestamp DESC LIMIT 5;
