@@ -17,12 +17,14 @@ async def main_loop():
 
     while not shutdown_event.is_set():
         logging.info("Background worker started. Running the main scraping task.")
+        task_successful = False
         try:
             await scrape_and_store_data()
-            logging.info("Scraping task finished.")
+            task_successful = True
+            logging.info("Scraping task completed successfully.")
         except Exception as e:
             logging.critical(f"Scraping task failed with a critical error: {e}", exc_info=True)
-            logging.info("An error occurred during scraping. The worker will still sleep until the next scheduled run.")
+            logging.error("Scraping task terminated due to an error. The worker will sleep until the next scheduled run.")
         
         # Calculate time until the next scheduled run
         now_utc = datetime.now(timezone.utc)
