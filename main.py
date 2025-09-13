@@ -422,8 +422,8 @@ async def scrape_and_store_data():
                     logging.info(f"Inserted {len(valid_timeseries)} timeseries records for this batch.")
             
             # IMPORTANT: Pause between batches to respect API rate limits
-            logging.info("Pausing for 10 seconds before next batch to respect API rate limits...")
-            await asyncio.sleep(10)
+            logging.info("Pausing for 15 seconds before next batch to respect API rate limits...")
+            await asyncio.sleep(15)
 
     except Exception as e:
         logging.error(f"An error occurred during the scraping pipeline: {e}", exc_info=True)
