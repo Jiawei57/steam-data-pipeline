@@ -100,7 +100,7 @@ class ScrapingState(Base):
 async def make_request_with_retry(method: str, url: str, use_proxy: bool = False, **kwargs) -> Optional[httpx.Response]:
     """Makes an HTTP request with retry logic, using a semaphore to limit concurrency."""
     max_retries = 3
-    base_delay = 2.0
+    base_delay = 5.0 # Increased base delay to be more respectful of rate limits
 
     request_url = url
     # If proxy is needed and the key is available, construct the ScraperAPI URL
@@ -422,8 +422,8 @@ async def scrape_and_store_data():
                     logging.info(f"Inserted {len(valid_timeseries)} timeseries records for this batch.")
             
             # IMPORTANT: Pause between batches to respect API rate limits
-            logging.info("Pausing for 5 seconds before next batch for safety...")
-            await asyncio.sleep(5)
+            logging.info("Pausing for 10 seconds before next batch to respect API rate limits...")
+            await asyncio.sleep(10)
 
     except Exception as e:
         logging.error(f"An error occurred during the scraping pipeline: {e}", exc_info=True)

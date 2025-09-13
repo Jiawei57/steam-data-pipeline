@@ -39,11 +39,17 @@ async def main_loop():
         
         logging.info(f"Worker will sleep for {sleep_seconds / 3600:.2f} hours until the next scheduled run at {next_run_time.isoformat()}.")
         
-        # Wait for the sleep duration, but check for shutdown signal every minute for a quick shutdown
-        for _ in range(int(sleep_seconds // 60)):
+        # Wait for the sleep duration, checking for shutdown signal every minute for a quick shutdown.
+        sleep_minutes = int(sleep_seconds // 60)
+        remaining_seconds = sleep_seconds % 60
+
+        for _ in range(sleep_minutes):
             if shutdown_event.is_set():
                 break
             await asyncio.sleep(60)
+
+        if not shutdown_event.is_set() and remaining_seconds > 0:
+            await asyncio.sleep(remaining_seconds)
 
 if __name__ == "__main__":
     # Configure logging for the runner script
