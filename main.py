@@ -176,6 +176,11 @@ async def fetch_paginated_list(base_url: str, limit: int, selector: str, id_extr
     all_app_ids = []
     page = 1
     while len(all_app_ids) < limit:
+        # Add a shutdown check at the beginning of each loop iteration
+        if shutdown_event.is_set():
+            logging.warning("Shutdown signal received during paginated fetch. Aborting list retrieval.")
+            break
+
         # Steam search pages use a 'page' query parameter.
         url = f"{base_url}&page={page}"
         logging.info(f"Fetching page {page} from {url}")
