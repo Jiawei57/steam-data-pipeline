@@ -305,7 +305,11 @@ async def fetch_timeseries_data(app_id: str, game_name: str, price_info: Optiona
             normalized_name = normalize_game_name(game_name)
             stream_url = "https://api.twitch.tv/helix/streams"
             headers = {"Client-ID": TWITCH_CLIENT_ID, "Authorization": f"Bearer {twitch_token}"}
-            stream_response = await make_request_with_retry('GET', stream_url, headers=headers, params={"game_name": normalized_name})
+            # Data Accuracy Improvement: Fetch up to 100 streams per request (the maximum allowed)
+            # to get a more accurate streamer count instead of the default 20.
+            params = {"game_name": normalized_name, "first": 100}
+
+            stream_response = await make_request_with_retry('GET', stream_url, headers=headers, params=params)
             if not stream_response:
                 raise Exception("http_get for streamer count returned None")
             streamer_count = len(stream_response.json().get("data", []))
@@ -418,8 +422,15 @@ async def scrape_and_store_data():
                 logging.info(f"Upserted {len(valid_metadata)} metadata records for this batch.")
 
             # 2. Fetch and Insert Timeseries data for the batch
-            apps_to_fetch = [(m["app_id"], m["name"], m.get("price_overview", {})) for m in valid_metadata if m.get("type") == "game" and m.get("name")]
+            # Robustness Improvement: Fetch timeseries data for ANY valid metadata entry that has a name.
+            # The player count API might return data even if the type isn't strictly 'game'.
+            # This prevents losing critical data for top games like CS2 if their metadata fetch is flaky.
+            apps_to_fetch = [(m["app_id"], m["name"], m.get("price_overview", {})) for m in valid_metadata if m.get("name")]
             if apps_to_fetch:
+                # Log if we are about to process a game that isn't marked as type 'game'
+                non_game_apps = [m for m in valid_metadata if m.get("type") != "game"]
+                if non_game_apps:
+                    logging.warning(f"Found {len(non_game_apps)} apps not of type 'game' but attempting to fetch timeseries data anyway. Example app_id: {non_game_apps[0]['app_id']}")
                 timeseries_tasks = [fetch_timeseries_data(app_id, name, price_info, twitch_token) for app_id, name, price_info in apps_to_fetch]
                 timeseries_results = await asyncio.gather(*timeseries_tasks)
                 valid_timeseries = [t for t in timeseries_results if t]
