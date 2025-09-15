@@ -203,7 +203,7 @@ async def fetch_paginated_list(base_url: str, limit: int, selector: str, id_extr
             break  # Stop if a page has no results, this is not an error.
         all_app_ids.extend(page_app_ids)
         page += 1
-        await asyncio.sleep(1)  # Be polite and wait a second between page loads
+        await asyncio.sleep(2)  # UNIFY DELAY: Use the same safe 2-second delay as other requests.
     return all_app_ids[:limit]
 
 # This function no longer needs a retry decorator, as the inner http_get handles it.
