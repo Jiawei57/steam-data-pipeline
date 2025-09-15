@@ -18,7 +18,10 @@ from dotenv import load_dotenv
 
 # --- Configuration & Setup ---
 
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+# Set up logging. Default to INFO for cleaner production logs.
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Silence the overly verbose httpx logger to prevent it from leaking API keys in URLs.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 load_dotenv() # Load environment variables from .env file for local development
 
