@@ -45,7 +45,7 @@ twitch_token_cache: Dict[str, Any] = {"token": None, "expires_at": datetime.utcn
 BATCH_SIZE = int(os.getenv("SCRAPER_BATCH_SIZE", 100))
 # Reduced default concurrency from 10 to 3 to be less aggressive and avoid 429 rate-limiting errors.
 # This is a more polite and reliable setting.
-CONCURRENCY_LIMIT = int(os.getenv("SCRAPER_CONCURRENCY_LIMIT", 3))
+CONCURRENCY_LIMIT = int(os.getenv("SCRAPER_CONCURRENCY_LIMIT", 2))
 semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
 RETRIABLE_STATUSES = {403, 407, 429, 500, 502, 503, 504}
 
@@ -442,9 +442,9 @@ async def scrape_and_store_data():
                     db.commit()
                     logging.info(f"Inserted {len(valid_timeseries)} timeseries records for this batch.")
             
-            # IMPORTANT: Pause between batches to respect API rate limits
-            logging.info("Pausing for 15 seconds before next batch to respect API rate limits...")
-            await asyncio.sleep(15)
+            # IMPORTANT: Pause between batches to be respectful of API rate limits.
+            logging.info("Pausing for 30 seconds before next batch to respect API rate limits...")
+            await asyncio.sleep(30)
 
     except Exception as e:
         logging.error(f"An error occurred during the scraping pipeline: {e}", exc_info=True)
