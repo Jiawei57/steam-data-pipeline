@@ -121,7 +121,7 @@ async def make_request_with_retry(method: str, url: str, use_proxy: bool = False
             async with semaphore:
                 # FINAL RELIABILITY FIX: Add a small delay before every single request
                 # to smooth out the request rate and be respectful to the APIs.
-                await asyncio.sleep(1) # 1-second delay between each request
+                await asyncio.sleep(2) # Increased delay to 2 seconds for maximum reliability
                 if method.upper() == 'GET':
                     response = await http_client.get(request_url, **kwargs)
                 elif method.upper() == 'POST':
