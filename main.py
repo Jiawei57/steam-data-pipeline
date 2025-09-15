@@ -43,7 +43,9 @@ twitch_token_cache: Dict[str, Any] = {"token": None, "expires_at": datetime.utcn
 
 # --- Constants ---
 BATCH_SIZE = int(os.getenv("SCRAPER_BATCH_SIZE", 100))
-CONCURRENCY_LIMIT = int(os.getenv("SCRAPER_CONCURRENCY_LIMIT", 10))
+# Reduced default concurrency from 10 to 3 to be less aggressive and avoid 429 rate-limiting errors.
+# This is a more polite and reliable setting.
+CONCURRENCY_LIMIT = int(os.getenv("SCRAPER_CONCURRENCY_LIMIT", 3))
 semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
 RETRIABLE_STATUSES = {403, 407, 429, 500, 502, 503, 504}
 
