@@ -4,6 +4,7 @@ import signal
 import os
 from datetime import datetime, timedelta, timezone
 from main import scrape_and_store_data, shutdown_event
+import random
 
 def handle_shutdown_signal(sig, frame):
     """Sets the shutdown event when a signal is received."""
@@ -28,13 +29,21 @@ async def main_loop():
         
         # Calculate time until the next scheduled run
         now_utc = datetime.now(timezone.utc)
+
+        # --- HUMANIZATION: Add random delay to the start time ---
+        # Add a random offset of 0 to 120 minutes to the start time to avoid a fixed pattern.
+        random_offset_minutes = random.randint(0, 120)
+        
         # Today's target run time
         next_run_time = now_utc.replace(hour=target_hour_utc, minute=0, second=0, microsecond=0)
         
         # If the target time for today has already passed, schedule for tomorrow
         if now_utc >= next_run_time:
             next_run_time += timedelta(days=1)
-            
+        
+        # Add the random offset. This might push the time past now, which is fine.
+        next_run_time += timedelta(minutes=random_offset_minutes)
+
         sleep_seconds = (next_run_time - now_utc).total_seconds()
         
         logging.info(f"Worker will sleep for {sleep_seconds / 3600:.2f} hours until the next scheduled run at {next_run_time.isoformat()}.")

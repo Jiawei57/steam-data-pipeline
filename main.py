@@ -31,6 +31,7 @@ STEAM_API_KEY = os.getenv("STEAM_API_KEY")
 TWITCH_CLIENT_ID = os.getenv("TWITCH_CLIENT_ID")
 TWITCH_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET")
 SCRAPERAPI_KEY = os.getenv("SCRAPERAPI_KEY")
+USE_PREMIUM_PROXY = os.getenv("USE_PREMIUM_PROXY", "false").lower() == "true"
 
 if not DATABASE_URL:
     logging.error("DATABASE_URL environment variable not set. Application cannot start.")
@@ -49,15 +50,22 @@ CONCURRENCY_LIMIT = int(os.getenv("SCRAPER_CONCURRENCY_LIMIT", 1))
 semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
 RETRIABLE_STATUSES = {403, 407, 429, 500, 502, 503, 504}
 
-# Use a single, reusable httpx client for performance
-headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-}
+# --- HUMANIZATION: User-Agent Rotation ---
+# A list of common user agents to rotate through for each request.
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15",
+]
 
 http_client = httpx.AsyncClient(
     timeout=30.0, 
     follow_redirects=True, 
-    headers=headers
+    # The default User-Agent is set here, but we will override it on a per-request basis.
+    headers={"User-Agent": random.choice(USER_AGENTS)}
 )
 
 # --- Database Setup (SQLAlchemy ORM) ---
@@ -105,12 +113,17 @@ class ScrapingState(Base):
 async def make_request_with_retry(method: str, url: str, use_proxy: bool = False, **kwargs) -> Optional[httpx.Response]:
     """Makes an HTTP request with retry logic, using a semaphore to limit concurrency."""
     max_retries = 3
-    base_delay = 5.0 # Increased base delay to be more respectful of rate limits
+    base_delay = 10.0 # Increased base delay to be more respectful of rate limits
 
     request_url = url
     # If proxy is needed and the key is available, construct the ScraperAPI URL
     if use_proxy and SCRAPERAPI_KEY:
-        payload = {'api_key': SCRAPERAPI_KEY, 'url': url}
+        payload = {'api_key': SCRAPERAPI_KEY, 'url': url, 'keep_headers': 'true'}
+        # --- FUTURE-PROOFING: Add a switch for premium/residential proxies ---
+        # If you upgrade your proxy plan for higher success rates,
+        # just set the USE_PREMIUM_PROXY environment variable to "true".
+        if USE_PREMIUM_PROXY:
+            payload['premium'] = 'true' # This enables residential IPs on many proxy services
         request_url = 'http://api.scraperapi.com/?' + urlencode(payload)
         logging.debug(f"Using proxy for URL: {url}")
     elif use_proxy and not SCRAPERAPI_KEY:
@@ -119,13 +132,18 @@ async def make_request_with_retry(method: str, url: str, use_proxy: bool = False
     for attempt in range(max_retries):
         try:
             async with semaphore:
-                # FINAL RELIABILITY FIX: Add a small delay before every single request
-                # to smooth out the request rate and be respectful to the APIs.
-                await asyncio.sleep(2) # Increased delay to 2 seconds for maximum reliability
+                # --- HUMANIZATION: Add random delay ("jitter") before each request ---
+                # This smooths out the request rate and makes it less robotic.
+                jitter_delay = 4 + random.uniform(1, 3) # Wait between 5 and 7 seconds
+                await asyncio.sleep(jitter_delay)
+
+                # --- HUMANIZATION: Rotate User-Agent for each request ---
+                request_headers = kwargs.pop('headers', {}).copy()
+                request_headers['User-Agent'] = random.choice(USER_AGENTS)
                 if method.upper() == 'GET':
-                    response = await http_client.get(request_url, **kwargs)
+                    response = await http_client.get(request_url, headers=request_headers, **kwargs)
                 elif method.upper() == 'POST':
-                    response = await http_client.post(request_url, **kwargs)
+                    response = await http_client.post(request_url, headers=request_headers, **kwargs)
                 else:
                     logging.error(f"Unsupported HTTP method: {method}")
                     return None
@@ -203,7 +221,9 @@ async def fetch_paginated_list(base_url: str, limit: int, selector: str, id_extr
             break  # Stop if a page has no results, this is not an error.
         all_app_ids.extend(page_app_ids)
         page += 1
-        await asyncio.sleep(2)  # UNIFY DELAY: Use the same safe 2-second delay as other requests.
+        # --- HUMANIZATION: Add random delay between fetching pages ---
+        page_delay = 2 + random.uniform(0.5, 1.5) # Wait between 2.5 and 3.5 seconds
+        await asyncio.sleep(page_delay)
     return all_app_ids[:limit]
 
 # This function no longer needs a retry decorator, as the inner http_get handles it.
@@ -445,9 +465,10 @@ async def scrape_and_store_data():
                     db.commit()
                     logging.info(f"Inserted {len(valid_timeseries)} timeseries records for this batch.")
             
-            # IMPORTANT: Pause between batches to be respectful of API rate limits.
-            logging.info("Pausing for 30 seconds before next batch to respect API rate limits...")
-            await asyncio.sleep(30)
+            # --- HUMANIZATION: Add a randomized, longer pause between batches ---
+            batch_pause = 60 + random.uniform(15, 45) # Pause for 75 to 105 seconds
+            logging.info(f"Pausing for {batch_pause:.2f} seconds before next batch to respect API rate limits...")
+            await asyncio.sleep(batch_pause)
 
     except Exception as e:
         logging.error(f"An error occurred during the scraping pipeline: {e}", exc_info=True)

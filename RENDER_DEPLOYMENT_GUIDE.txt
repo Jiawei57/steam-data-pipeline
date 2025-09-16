@@ -63,7 +63,10 @@
         *   Key: `SCRAPERAPI_KEY`, Value: `貼上您從 ScraperAPI 儀表板獲取的 API 金鑰`
     *   **(可選) 效能參數**:
         *   Key: `SCRAPER_BATCH_SIZE`, Value: `100`
-        *   Key: `SCRAPER_CONCURRENCY_LIMIT`, Value: `10`
+        *   Key: `SCRAPER_CONCURRENCY_LIMIT`, Value: `1`
+    *   **(可選) 未來升級選項**:
+        *   Key: `USE_PREMIUM_PROXY`, Value: `false` (預設為 false。未來若升級代理方案，可設為 true 以啟用住宅 IP。)
+
 4.  點擊頁面底部的 **Save Changes**。
 
 ---
@@ -135,6 +138,7 @@
 
 2.  **檢查爬取狀態**:
     執行以下 SQL 查詢，查看爬蟲的鎖定狀態。`is_scraping_active` 的值應該會在爬取時變為 `true`，爬取結束後變為 `false`。
+    *(提示: `last_processed_index` 是舊版架構的殘留欄位，可以忽略。)*
     ```sql
     SELECT * FROM scraping_state;
     ```
