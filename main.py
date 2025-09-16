@@ -43,7 +43,9 @@ if not DATABASE_URL:
 twitch_token_cache: Dict[str, Any] = {"token": None, "expires_at": datetime.utcnow()}
 
 # --- Constants ---
-BATCH_SIZE = int(os.getenv("SCRAPER_BATCH_SIZE", 100))
+# Reduced batch size to lower memory usage on resource-constrained platforms like Render's free tier.
+# A smaller batch creates fewer concurrent asyncio tasks, preventing memory spikes.
+BATCH_SIZE = int(os.getenv("SCRAPER_BATCH_SIZE", 20))
 # Reduced default concurrency from 10 to 3 to be less aggressive and avoid 429 rate-limiting errors.
 # This is a more polite and reliable setting.
 CONCURRENCY_LIMIT = int(os.getenv("SCRAPER_CONCURRENCY_LIMIT", 1))
