@@ -1,87 +1,53 @@
-# Steam 數據管道
+# Steam 市場洞察數據管道 (Steam Market Insight Data Pipeline)
 
-一個穩健、自動化的數據管道，用於從 Steam 抓取遊戲數據並將其儲存到 PostgreSQL 資料庫中。此專案包含一個用於抓取數據的背景工人 (Background Worker) 和一個用於基本互動的 FastAPI 介面。
+一個生產級、雲端原生的自動化數據管道，旨在每日從 Steam 和 Twitch 平台採集市場數據。此專案不僅是一個數據抓取工具，更是一個展現了高韌性、可擴展性與現代雲端部署實踐的完整數據工程解決方案。
 
-## 功能特性
+---
 
-- **混合抓取策略**: 從 Steam 的「暢銷商品」和「最多人玩」排行榜中獲取高價值的遊戲池。
-- **高韌性與穩健性**: 針對網路和 API 錯誤，實現了帶有指數退避策略的自動重試機制。
-- **代理輪換**: 利用住宅代理池來避免 IP 封鎖，確保高成功率。
-- **選擇性代理**: 智能地僅對敏感網域（如 `store.steampowered.com`）的請求應用代理，同時對公開 API（如 `api.steampowered.com` 和 Twitch）使用直接連線。
-- **並發處理**: 使用 `asyncio` 和信號量 (Semaphore) 以並發批次的方式處理數據，最大化效率。
-- **優雅關閉**: 背景工人可以被優雅地關閉，確保正在進行中的任務在退出前能順利完成。
-- **高效資料庫操作**: 使用 SQLAlchemy ORM，結合批次插入和 "upsert" (on-conflict-do-update) 邏輯，實現高效能的數據儲存。
-- **數據整合**: 使用 Twitch API 的直播主數量來豐富 Steam 數據。
+## 核心技術亮點 (Key Features)
 
-## 系統架構
+*   **端到端自動化 (End-to-End Automation)**: 每日自動執行，從數據採集、清洗、整合到儲存，無需人工干預。
+*   **高韌性系統設計 (High-Resilience Design)**:
+    *   **智慧重試**: 針對網路波動與 API 錯誤，實現了帶有指數退避 (Exponential Backoff) 與隨機抖動 (Jitter) 的自動重試機制。
+    *   **優雅關閉**: 系統能響應 `SIGTERM` 信號，確保在雲端平台重啟或部署時，能安全地完成當前任務，防止數據損壞。
+    *   **分布式鎖**: 透過資料庫實現的鎖定機制，確保在任何情況下都只有一個爬蟲實例在運行，防止競爭條件與數據污染。
+*   **進階反爬蟲策略 (Advanced Anti-Scraping)**:
+    *   **代理整合**: 透過 ScraperAPI 整合代理服務，並預留了升級至住宅 IP 的開關。
+    *   **擬人化模擬**: 透過輪換 User-Agent 和在請求間加入隨機延遲，模擬真實用戶行為，大幅提升抓取成功率。
+*   **雲端原生架構 (Cloud-Native Architecture)**:
+    *   **容器化思維**: 專為在 Render 等 PaaS 平台上作為背景工人 (Background Worker) 部署而設計。
+    *   **環境變數驅動**: 所有敏感金鑰與配置均透過環境變數管理，符合十二因子應用 (Twelve-Factor App) 規範。
+*   **高效能數據處理 (High-Performance Data Handling)**:
+    *   **異步 I/O**: 全面採用 `asyncio` 和 `httpx` 進行高並發的網路請求。
+    *   **批次處理**: 數據以批次方式處理，並透過 SQLAlchemy Core 的 `pg_insert` 實現高效的 "Upsert" 操作，最大化資料庫寫入效能。
 
-- **資料庫**: 一個託管在 Render 上的 PostgreSQL 資料庫，用於儲存所有抓取到的數據（`games_metadata` 和 `games_timeseries` 表）。
-- **背景工人 (Background Worker)**: 一個作為 Render 背景工人運行的 Python 應用程式。它透過 `runner.py` 執行主要的抓取邏輯 (`scrape_and_store_data`)。
-- **API (可選)**: 程式碼中包含一個輕量級的 FastAPI 應用，提供健康檢查和手動觸發端點。在背景工人的設定中，此 API 不會對外公開。
+## 系統架構 (System Architecture)
 
-## 本地開發環境設定
+本專案由兩個核心雲端服務組成：
 
-1.  **克隆儲存庫**:
-    ```bash
-    git clone <您的儲存庫 URL>
-    cd <專案資料夾名稱>
-    ```
+1.  **PostgreSQL 資料庫 (`steam-db`)**:
+    *   **平台**: Render
+    *   **作用**: 作為數據的持久化儲存層。包含 `games_metadata`（靜態元數據）、`games_timeseries`（動態時間序列數據）和 `scraping_state`（用於實現分布式鎖）三個核心資料表。
 
-2.  **建立虛擬環境**:
-    ```bash
-    python -m venv venv
-    source venv/bin/activate  # 在 Windows 上，使用 `venv\Scripts\activate`
-    ```
+2.  **背景工人 (`steam-scraper-worker`)**:
+    *   **平台**: Render
+    *   **作用**: 核心的數據處理服務。它是一個無狀態的 Python 應用，由 `runner.py` 啟動，每日在隨機的排定時間觸發 `main.py` 中的 `scrape_and_store_data` 函數，執行完整的數據管道任務。
 
-3.  **安裝依賴套件**:
-    您的專案中應已包含 `requirements.txt` 檔案。執行以下指令進行安裝：
-    ```bash
-    pip install -r requirements.txt
-    ```
+## 技術棧 (Technology Stack)
 
-4.  **設定環境變數**:
-    在專案根目錄下建立一個 `.env` 檔案，並填入您的憑證。您可以使用本地的 PostgreSQL 實例，或使用您在 Render DB 上的「外部連線字串」。
-    ```
-    # .env 檔案內容範例
-    DATABASE_URL=postgresql://user:password@host:port/database
-    STEAM_API_KEY=YOUR_STEAM_API_KEY
-    TWITCH_CLIENT_ID=YOUR_TWITCH_CLIENT_ID
-    TWITCH_CLIENT_SECRET=YOUR_TWITCH_CLIENT_SECRET
-    PROXY_URLS=http://user:pass@host1:port1,http://user:pass@host2:port2 # 住宅代理 URL，以逗號分隔
-    ```
+*   **語言**: Python 3.9+
+*   **核心框架**: `asyncio`
+*   **網路請求**: `httpx`
+*   **網頁解析**: `BeautifulSoup4`
+*   **資料庫 ORM**: `SQLAlchemy`
+*   **雲端平台**: Render
+*   **資料庫**: PostgreSQL
+*   **代理服務**: ScraperAPI
 
-5.  **在本地運行應用程式**:
-    您可以運行 FastAPI 伺服器來測試 API 端點：
-    ```bash
-    uvicorn main:app --reload
-    ```
-    或者，直接運行爬蟲腳本，模擬它在 Render 上的運行方式：
-    ```bash
-    python runner.py
-    ```
+## 專案文件
 
-## 在 Render 上部署
+*   **程式碼導覽**:
+    *   需要將此專案部署到您自己的 Render 帳號嗎？請遵循 `RENDER_DEPLOYMENT_GUIDE.txt` 中的詳細步驟。
 
-此專案被設計為在 Render 上作為 **背景工人 (Background Worker)** 部署。
-
-1.  **建立 PostgreSQL 資料庫**:
-    - 在 Render 中，建立一個新的 **PostgreSQL** 服務。
-    - 使用 `Free` 方案並選擇一個區域（例如 `Oregon (US West)`）。
-
-2.  **建立背景工人**:
-    - 建立一個新的 **Background Worker** 並將其連接到您的 GitHub 儲存庫。
-    - **啟動指令 (Start Command)**: `python runner.py`
-    - 確保區域與您的資料庫相同。
-
-3.  **設定環境變數**:
-    - 在背景工人的 **Environment** 頁籤中，透過連結到您的 PostgreSQL 服務的內部連線字串來新增 `DATABASE_URL`。
-    - 新增您的 `STEAM_API_KEY`, `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET`, 和 `PROXY_URLS` (以逗號分隔)。
-
-4.  **自動部署**:
-    每當您 `git push` 到 `main` 分支時，Render 都會自動部署新的變更。
-
-若需更詳細的逐步指南，請參考 `RENDER_DEPLOYMENT_GUIDE.txt` 檔案。
-
-## 如何驗證數據
-
-使用像 DBeaver 或 pgAdmin 這樣的客戶端工具連接到您的 PostgreSQL 資料庫，並執行 SQL 查詢來檢查 `games_metadata` 和 `games_timeseries` 表。請參考 `RENDER_DEPLOYMENT_GUIDE.txt` 中的「驗證」部分以獲取查詢範例。
+*   **視覺化與分析規劃**:
+    *   好奇這些數據能產生什麼商業價值嗎？請查看 `VISUALIZATION_PLAN.md`，了解我們從數據驗證到互動式產品開發的完整藍圖。

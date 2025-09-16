@@ -41,10 +41,11 @@
     *   **Name**: `steam-scraper-worker` (建議使用此名稱)
     *   **Region**: `Oregon (US West)` (務必選擇與您的資料庫相同的區域)
     *   **Branch**: `main`
-    *   **Start Command**: (此欄位應不存在，因為啟動指令已在 Dockerfile 中由 `CMD` 指令定義。如果看到 `Docker Command (optional)`，請將其留空。)
+    *   **Build Command**: `pip install -r requirements.txt` (Render 通常會自動偵測並執行此指令，可保持預設)
+    *   **Start Command**: `python runner.py`
     *   **Instance Type**: `Free`
 4.  點擊頁面底部的 **Create Background Worker**。
-    *(注意：第一次部署很可能會失敗，這是完全正常的，因為還未設定環境變數。)*
+    *(注意：第一次部署很可能會失敗，這是完全正常的，因為還未設定環境變數。Render 會先嘗試建置，然後在執行 Start Command 時因缺少環境變數而失敗。)*
 
 ---
 
@@ -66,6 +67,8 @@
         *   Key: `SCRAPER_CONCURRENCY_LIMIT`, Value: `1`
     *   **(可選) 未來升級選項**:
         *   Key: `USE_PREMIUM_PROXY`, Value: `false` (預設為 false。未來若升級代理方案，可設為 true 以啟用住宅 IP。)
+    *   **(可選) 排程時間**:
+        *   Key: `WORKER_RUN_HOUR_UTC`, Value: `17` (此值定義了每日隨機執行時間窗的**起點**。`17` 代表從 UTC 17:00 開始，即您的時區 UTC+8 的凌晨 1 點。)
 
 4.  點擊頁面底部的 **Save Changes**。
 
@@ -157,3 +160,11 @@
     ```
 
 透過定期執行這些查詢，您就可以確信您的數據管道正在健康、穩定地運行。
+
+---
+
+### 下一步：視覺化與分析 (第一階段)
+
+當您確認數據管道已成功部署並開始收集數據後，下一步是執行專案規劃書中的第一階段：**數據驗證與管道監控**。
+這個步驟將使用免費的 Looker Studio 工具來快速驗證數據的健康狀況，為後續的 Streamlit 開發打下堅實的基礎。
+請參閱專案中的 `VISUALIZATION_PLAN.md` 檔案，以獲取完整的視覺化與分析策略。
