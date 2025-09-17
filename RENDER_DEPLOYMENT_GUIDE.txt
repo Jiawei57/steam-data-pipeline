@@ -1,5 +1,5 @@
 ============================================================
- Render 部署指南 - Steam 數據管道 (v3.0)
+ Render 部署指南 - Steam 數據管道 
 ============================================================
 
 ### 簡介
@@ -25,7 +25,7 @@
 2.  在設定頁面中，填入以下資訊：
     *   **Name**: `steam-db` (建議使用此名稱以便識別)
     *   **Database**: `steam_data`
-    *   **Region**: `Oregon (US West)`
+    *   **Region**: `Oregon (US West)` (務必選擇與您的背景工人相同的區域，以最小化延遲並降低數據傳輸成本)
     *   **Plan**: `Free`
 3.  點擊頁面底部的 **Create Database**。
 4.  請耐心等待幾分鐘，直到資料庫的狀態顯示為 **`Available`** (可用)。
@@ -41,11 +41,11 @@
     *   **Name**: `steam-scraper-worker` (建議使用此名稱)
     *   **Region**: `Oregon (US West)` (務必選擇與您的資料庫相同的區域)
     *   **Branch**: `main`
-    *   **Build Command**: `pip install -r requirements.txt` (Render 通常會自動偵測並執行此指令，可保持預設)
+    *   **Build Command**: `pip install -r requirements.txt` (Render 會自動偵測 `requirements.txt` 並執行此指令)
     *   **Start Command**: `python runner.py`
     *   **Instance Type**: `Free`
 4.  點擊頁面底部的 **Create Background Worker**。
-    *(注意：第一次部署很可能會失敗，這是完全正常的，因為還未設定環境變數。Render 會先嘗試建置，然後在執行 Start Command 時因缺少環境變數而失敗。)*
+    *(**注意：這是預期行為！** 第一次部署會因缺少必要的環境變數而失敗。我們的流程是先建立服務，再安全地注入配置。)*
 
 ---
 
@@ -56,6 +56,7 @@
 3.  在 "Environment Variables" 區塊，點擊 **Add Environment Variable**，逐一新增所有必要的變數：
     *   **資料庫連線**:
         *   Key: `DATABASE_URL`, Value: (點擊輸入框，從下拉選單選擇 `steam-db (PostgreSQL)` > `Internal Database URL`)
+        *   ** 這裡選擇 `Internal Database URL` 而非 `External` 是基於安全與效能的最佳實踐，因為它能確保服務間的通訊在 Render 的私有網路內進行。
     *   **API 金鑰**:
         *   Key: `STEAM_API_KEY`, Value: `貼上您的 Steam API 金鑰`
         *   Key: `TWITCH_CLIENT_ID`, Value: `貼上您的 Twitch Client ID`
@@ -63,6 +64,7 @@
     *   **代理服務金鑰 (極其重要)**:
         *   Key: `SCRAPERAPI_KEY`, Value: `貼上您從 ScraperAPI 儀表板獲取的 API 金鑰`
     *   **(可選) 效能參數**:
+        *   Key: `PYTHON_VERSION`, Value: `3.11` (明確指定 Python 版本，確保部署環境與本地開發一致)
         *   Key: `SCRAPER_BATCH_SIZE`, Value: `100`
         *   Key: `SCRAPER_CONCURRENCY_LIMIT`, Value: `1`
     *   **(可選) 未來升級選項**:
@@ -126,9 +128,15 @@
 
 1.  **使用 `psql` 命令列工具 (推薦)**:
     a.  安裝 PostgreSQL 的 "Command Line Tools"。
-    b.  打開終端機，直接貼上您在 Render 儀表板複製的 "External Connection String"：
+    b.  打開終端機，準備貼上您在 Render 儀表板複製的 "External Connection String"。
+
+    > **[!!] 安全警告 (Security Warning) [!!]**
+    > 您的連線字串 (Connection String) 包含資料庫密碼，屬於高度敏感資訊。
+    > **絕對不要** 將其分享給他人，或提交到 Git 版本控制中。
+    > 以下僅為格式範例，請務必使用您自己的連線字串。
+
     ```bash
-    psql "postgresql://steam_data_user:qA0QvdeNR2plOIBbCMBqXmUYXEnu5Jew@dpg-d318rpumcj7s73869f8g-a.oregon-postgres.render.com/steam_data"
+    psql "[在此貼上從 Render 儀表板複製的 External Connection String]"
     ```
     *** Windows 使用者提示 ***
     如果您在 Windows 的終端機 (如 Git Bash / MINGW64) 中執行查詢時遇到 `...has no equivalent in encoding "BIG5"` 的錯誤，
