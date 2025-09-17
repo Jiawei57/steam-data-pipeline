@@ -1,5 +1,5 @@
 ============================================================
- Render 部署指南 - Steam 數據管道 
+ Render 部署指南 - Steam 數據管道 (v4.0 - 面試準備版)
 ============================================================
 
 ### 簡介
@@ -56,7 +56,7 @@
 3.  在 "Environment Variables" 區塊，點擊 **Add Environment Variable**，逐一新增所有必要的變數：
     *   **資料庫連線**:
         *   Key: `DATABASE_URL`, Value: (點擊輸入框，從下拉選單選擇 `steam-db (PostgreSQL)` > `Internal Database URL`)
-        *   ** 這裡選擇 `Internal Database URL` 而非 `External` 是基於安全與效能的最佳實踐，因為它能確保服務間的通訊在 Render 的私有網路內進行。
+        *   **[面試亮點]** 這裡選擇 `Internal Database URL` 而非 `External` 是基於安全與效能的最佳實踐，因為它能確保服務間的通訊在 Render 的私有網路內進行。
     *   **API 金鑰**:
         *   Key: `STEAM_API_KEY`, Value: `貼上您的 Steam API 金鑰`
         *   Key: `TWITCH_CLIENT_ID`, Value: `貼上您的 Twitch Client ID`
@@ -65,8 +65,10 @@
         *   Key: `SCRAPERAPI_KEY`, Value: `貼上您從 ScraperAPI 儀表板獲取的 API 金鑰`
     *   **(可選) 效能參數**:
         *   Key: `PYTHON_VERSION`, Value: `3.11` (明確指定 Python 版本，確保部署環境與本地開發一致)
-        *   Key: `SCRAPER_BATCH_SIZE`, Value: `100`
+        *   Key: `SCRAPER_BATCH_SIZE`, Value: `20`
+            *   **[效能備註]** 此值定義了每次批次處理的遊戲數量。`20` 是一個針對 Render 免費方案 (記憶體有限) 的保守且穩定的設定。較大的值會加快爬取速度，但可能導致記憶體超限而使服務崩潰。
         *   Key: `SCRAPER_CONCURRENCY_LIMIT`, Value: `1`
+            *   **[效能備註]** 此值限制了同時發出的網路請求數量。`1` 是最「有禮貌」的設定，能有效避免因請求過快而被目標網站封鎖 (429 錯誤)。
     *   **(可選) 未來升級選項**:
         *   Key: `USE_PREMIUM_PROXY`, Value: `false` (預設為 false。未來若升級代理方案，可設為 true 以啟用住宅 IP。)
     *   **(可選) 排程時間**:
@@ -93,6 +95,17 @@
 
 **核心原理**：每當您將新的程式碼改動推送到您連接的 GitHub repository 的 `main` 分支時，Render 就會自動觸發一次新的部署。
 
+**進階部署控制：使用 Commit 訊息**
+
+為了提供更靈活的部署選項，本專案的背景工人能夠讀取您的 Git Commit 訊息，並根據特定關鍵字調整其啟動行為。
+
+*   **預設行為**：每次部署後，背景工人都會**立即執行一次**完整的爬取任務。
+*   **進階控制**：如果您只想更新程式碼，而不希望服務在部署後立即執行任務（例如，您修復了一個小 bug，並希望等待下一個正常的排程時間），您可以在 `git commit` 訊息中加入 `[skip-run]` 關鍵字。
+
+這讓您可以精確控制每一次部署的後續行為。
+
+---
+
 **更新步驟**:
 
 1.  **在本地修改程式碼**:
@@ -105,11 +118,19 @@
     ```
 
 3.  **提交您的變更**:
-    為這次的更新建立一個快照，並附上描述性的訊息：
-    ```bash
-    git commit -m "一個描述您這次更新內容的訊息"
-    ```
-    *範例: `git commit -m "Refactor: 優化 API 重試邏輯"`*
+    為這次的更新建立一個快照，並附上描述性的訊息。根據您的需求，選擇以下一種場景：
+
+    *   **場景 A：部署後立即執行任務 (預設)**
+        這適用於您新增了重要功能，並希望立即驗證效果的情況。
+        ```bash
+        git commit -m "Feature: 新增遊戲標籤的抓取功能"
+        ```
+
+    *   **場景 B：部署後不執行任務，等待下一次排程**
+        這適用於您只想更新程式碼（如修復 bug），而不希望觸發一次額外的爬取。
+        ```bash
+        git commit -m "Fix: 修正了 Twitch API 的解析邏輯 [skip-run]"
+        ```
 
 4.  **將變更推送到 GitHub (觸發部署)**:
     執行以下指令，將您的提交上傳到 GitHub：
@@ -174,5 +195,30 @@
 ### 下一步：視覺化與分析 (第一階段)
 
 當您確認數據管道已成功部署並開始收集數據後，下一步是執行專案規劃書中的第一階段：**數據驗證與管道監控**。
-這個步驟將使用免費的 Looker Studio 工具來快速驗證數據的健康狀況，為後續的 Streamlit 開發打下堅實的基礎。
-請參閱專案中的 `VISUALIZATION_PLAN.md` 檔案，以獲取完整的視覺化與分析策略。
+這個步驟將使用免費的 Looker Studio 工具來快速驗證數據的健康狀況，為後續的 Streamlit 開發打下堅實的基礎。請參閱專案中的 `VISUALIZATION_PLAN.md` 檔案，以獲取完整的視覺化與分析策略。
+
+---
+
+### 常見問題與解決方案 (FAQ)
+
+1.  **Q: 我的數據好幾個小時沒有更新了，怎麼辦？**
+
+    A: 請依照以下步驟排查：
+    a.  **檢查日誌**: 前往 `steam-scraper-worker` 服務的 **Logs** 頁籤，查看是否有紅色的錯誤訊息。
+    b.  **檢查服務狀態**: 在 **Metrics** 頁籤中，檢查 CPU 和 Memory 使用率是否曾達到 100%，這可能表示服務因資源耗盡而崩潰重啟。
+    c.  **檢查資料庫鎖**: 使用資料庫工具查詢 `SELECT * FROM scraping_state;`。如果 `is_scraping_active` 的值為 `true`，但 `last_started_utc` 的時間已經是很久以前，這可能表示上次的任務異常終止。此時，您可以透過手動部署來安全地重啟服務。
+
+2.  **Q: 我想立即手動運行一次爬蟲來測試，該怎麼做？**
+
+    A: 最簡單的方法是透過 Git 觸發一次新的部署，並確保您的 commit 訊息中**不包含** `[skip-run]`。您甚至可以提交一個空的 commit 來觸發：
+    ```bash
+    git commit --allow-empty -m "Trigger: Manually re-running the scraper"
+    git push origin main
+    ```
+
+3.  **Q: `[skip-run]` 功能好像沒有生效？**
+
+    A: 請確認以下幾點：
+    a.  **語法正確**: 確保關鍵字 `[skip-run]` 完整且包含方括號 `[]`。
+    b.  **環境依賴**: 檢查 `Dockerfile` 是否已安裝 `git`。如果未安裝，Python 腳本將無法讀取 commit 訊息。
+    c.  **檢查日誌**: 在服務啟動的日誌中，尋找 "偵測到 '[skip-run]'" 或 "無法執行 'git' 指令" 的相關訊息，這能幫助您定位問題。
