@@ -43,7 +43,12 @@ async def main_loop():
             except FileNotFoundError:
                 logging.warning("無法執行 'git' 指令 (可能未安裝或不在 PATH 中)。將採用預設行為，立即運行任務。")
             except subprocess.CalledProcessError as e:
-                logging.error(f"獲取 git commit 訊息失敗: {e}。將採用預設行為，立即運行任務。")
+                # 在 Render/Docker 環境中，.git 目錄通常不存在，會導致 'exit status 128'。
+                # 我們將此視為一種預期情況，並將日誌等級從 ERROR 降為 INFO。
+                if e.returncode == 128:
+                    logging.info(f"無法讀取 git 歷史記錄 (在部署環境中為正常現象)。將採用預設行為，立即運行任務。")
+                else:
+                    logging.error(f"獲取 git commit 訊息失敗: {e}。將採用預設行為，立即運行任務。")
 
         if should_run_now:
             logging.info("背景工人已啟動。正在運行主爬取任務。")
