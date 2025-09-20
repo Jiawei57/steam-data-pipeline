@@ -326,8 +326,7 @@ async def fetch_timeseries_data(app_id: str, game_name: str, price_info: Optiona
     if STEAM_API_KEY:
         try:
             player_url = f"https://api.steampowered.com/ISteamUserStats/GetNumberOfCurrentPlayers/v1/?appid={app_id}&key={STEAM_API_KEY}" 
-            # 針對此特定 API，將 404 視為可忽略的狀態
-            player_response = await make_request_with_retry('GET', player_url, ignorable_statuses={404})
+            player_response = await make_request_with_retry('GET', player_url)
             if player_response:
                 player_data = player_response.json().get("response", {})
                 player_count = player_data.get("player_count", 0)
