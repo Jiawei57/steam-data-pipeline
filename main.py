@@ -326,6 +326,7 @@ async def fetch_timeseries_data(app_id: str, game_name: str, price_info: Optiona
     if STEAM_API_KEY:
         try:
             player_url = f"https://api.steampowered.com/ISteamUserStats/GetNumberOfCurrentPlayers/v1/?appid={app_id}&key={STEAM_API_KEY}" 
+            # 移除 use_proxy=True。此 API 通常不需要代理，直接請求更可靠且不消耗代理額度。
             player_response = await make_request_with_retry('GET', player_url)
             if player_response:
                 player_data = player_response.json().get("response", {})
